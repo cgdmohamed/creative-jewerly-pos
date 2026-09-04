@@ -25,6 +25,8 @@ import { alertsRouter } from './routes/alerts.js';
 import { woocommerceRouter, runAutoSync } from './routes/woocommerce.js';
 
 const app = express();
+// Cloudflare forwards to Coolify's reverse proxy before reaching the app.
+app.set('trust proxy', 2);
 app.use(
   cors({
     origin: (origin, cb) => {
