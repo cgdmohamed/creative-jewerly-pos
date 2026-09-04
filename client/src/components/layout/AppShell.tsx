@@ -11,7 +11,8 @@ import { refreshOfflineCache } from '@/lib/offlineCache';
 import { cn } from '@/lib/utils';
 import { Toaster, toast } from '@/components/ui/toast';
 import { Badge } from '@/components/ui/badge';
-import { useCurrentShift } from '@/hooks/useData';
+import { useCurrentShift, useSettings } from '@/hooks/useData';
+import { storeName } from '@/lib/branding';
 import { useIdle } from '@/hooks/useIdle';
 import { isScreenLocked, setScreenLocked } from '@/lib/lock';
 import LockScreen from '@/components/LockScreen';
@@ -97,6 +98,8 @@ export default function AppShell() {
   const location = useLocation();
   const qc = useQueryClient();
   const { data: shift } = useCurrentShift();
+  const { data: settings } = useSettings();
+  const name = storeName(settings);
   const [locked, setLocked] = useState(isScreenLocked);
   const [menuOpen, setMenuOpen] = useState(false);
   const idle = useIdle(IDLE_LOCK_MS, !locked);
@@ -167,7 +170,7 @@ export default function AppShell() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white">
             <Gem className="h-4 w-4" />
           </div>
-          <span className="text-sm font-extrabold text-slate-900">سبائك ومشغولات</span>
+          <span className="max-w-44 truncate text-sm font-extrabold text-slate-900">{name}</span>
         </div>
         <div className="mr-auto flex items-center gap-2">
           <div className="h-7 w-7 rounded-full bg-brand-100 text-center text-sm font-bold leading-7 text-brand-700">
@@ -199,7 +202,7 @@ export default function AppShell() {
             <Gem className="h-5 w-5" />
           </div>
           <div>
-            <div className="text-sm font-extrabold text-slate-900">سبائك ومشغولات</div>
+            <div className="max-w-40 truncate text-sm font-extrabold text-slate-900" title={name}>{name}</div>
             <div className="text-xs text-slate-500">نظام الإدارة الداخلية</div>
           </div>
         </div>

@@ -15,6 +15,7 @@ import { useOfflineStore } from '@/stores/offline';
 import { fmtMoney, fmtNum, metalLabel, fmtDateTime, cn } from '@/lib/utils';
 import { copyInvoiceText, shareInvoiceWhatsApp } from '@/lib/invoiceShare';
 import type { CartLine, Item } from '@/lib/types';
+import { storeName } from '@/lib/branding';
 
 export default function Pos() {
   const { employee } = useAuth();
@@ -36,6 +37,7 @@ export default function Pos() {
   const searchRef = useRef<HTMLInputElement>(null);
   const { data: allItems } = useItems({ includeInactive: 'false' });
   const { data: settings } = useSettings();
+  const name = storeName(settings);
   const { data: customers } = useCustomers();
   const { data: categories } = useCategories();
   const [activeCategory, setActiveCategory] = useState<number | 'all'>('all');
@@ -798,13 +800,13 @@ export default function Pos() {
       </div>
 
       {lastInvoice && (
-        <InvoiceModal invoice={lastInvoice} onClose={() => setLastInvoice(null)} />
+        <InvoiceModal invoice={lastInvoice} storeName={name} onClose={() => setLastInvoice(null)} />
       )}
     </div>
   );
 }
 
-function InvoiceModal({ invoice, onClose }: { invoice: any; onClose: () => void }) {
+function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName: string; onClose: () => void }) {
   const { employee } = useAuth();
   const printRef = useRef<HTMLDivElement>(null);
 
@@ -812,7 +814,7 @@ function InvoiceModal({ invoice, onClose }: { invoice: any; onClose: () => void 
     <Dialog open onClose={onClose} title="تم البيع بنجاح" className="max-w-md">
       <div ref={printRef} className="print-area rounded-lg border border-slate-200 p-5 text-sm">
         <div className="mb-3 text-center">
-          <div className="text-lg font-extrabold text-slate-900">محل السبائك والمشغولات</div>
+          <div className="text-lg font-extrabold text-slate-900">{storeName}</div>
           <div className="text-xs text-slate-500">فاتورة داخلية</div>
         </div>
         <div className="mb-3 flex justify-between border-b border-dashed pb-2">
@@ -871,8 +873,8 @@ function InvoiceModal({ invoice, onClose }: { invoice: any; onClose: () => void 
           variant="outline"
           className="flex-1"
           onClick={() => {
-            if (!shareInvoiceWhatsApp(invoice, invoice.customerPhone)) {
-              const ok = copyInvoiceText(invoice);
+            if (!shareInvoiceWhatsApp(invoice, invoice.customerPhone, storeName)) {
+              const ok = copyInvoiceText(invoice, storeName);
               toast[ok ? 'info' : 'error'](ok ? 'نسخنا نص الفاتورة — ألصقه للعميل' : 'لا يوجد رقم موبايل للعميل');
             }
           }}

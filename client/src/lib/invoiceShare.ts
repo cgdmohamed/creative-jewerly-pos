@@ -1,10 +1,11 @@
 import { fmtMoney } from '@/lib/utils';
 import type { Invoice } from '@/lib/types';
+import { DEFAULT_STORE_NAME } from '@/lib/branding';
 
 // Human-readable Arabic invoice summary suitable for WhatsApp / clipboard.
-export function invoiceText(inv: Invoice): string {
+export function invoiceText(inv: Invoice, storeName = DEFAULT_STORE_NAME): string {
   const lines: string[] = [
-    'فاتورة — محل السبائك والمشغولات',
+    `فاتورة — ${storeName}`,
     `رقم: ${inv.invoiceNo}`,
     `التاريخ: ${new Date(inv.createdAt).toLocaleString('ar-EG-u-nu-latn')}`,
     '',
@@ -20,8 +21,8 @@ export function invoiceText(inv: Invoice): string {
   return lines.join('\n');
 }
 
-export function copyInvoiceText(inv: Invoice): boolean {
-  const text = invoiceText(inv);
+export function copyInvoiceText(inv: Invoice, storeName?: string): boolean {
+  const text = invoiceText(inv, storeName);
   if (navigator.clipboard?.writeText) {
     void navigator.clipboard.writeText(text);
     return true;
@@ -31,9 +32,9 @@ export function copyInvoiceText(inv: Invoice): boolean {
 
 // Open WhatsApp with the invoice text pre-filled for the given phone (if any).
 // Returns true when a link was opened.
-export function shareInvoiceWhatsApp(inv: Invoice, phone?: string | null): boolean {
+export function shareInvoiceWhatsApp(inv: Invoice, phone?: string | null, storeName?: string): boolean {
   const digits = String(phone ?? '').replace(/[^\d+]/g, '');
   if (!digits) return false;
-  window.open(`https://wa.me/${digits}?text=${encodeURIComponent(invoiceText(inv))}`, '_blank', 'noopener');
+  window.open(`https://wa.me/${digits}?text=${encodeURIComponent(invoiceText(inv, storeName))}`, '_blank', 'noopener');
   return true;
 }

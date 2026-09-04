@@ -37,7 +37,8 @@ export default function Settings() {
   const qc = useQueryClient();
   const [draft, setDraft] = useState<Record<string, boolean>>({});
   const [vatDraft, setVatDraft] = useState<string>('');
-  const isEditing = Object.keys(draft).length > 0 || vatDraft !== '';
+  const [storeNameDraft, setStoreNameDraft] = useState<string | null>(null);
+  const isEditing = Object.keys(draft).length > 0 || vatDraft !== '' || storeNameDraft !== null;
 
   const { data: wcConfig } = useQuery({
     queryKey: ['wc-config'],
@@ -83,6 +84,7 @@ export default function Settings() {
       toast.success('تم حفظ الإعدادات');
       setDraft({});
       setVatDraft('');
+      setStoreNameDraft(null);
       qc.invalidateQueries({ queryKey: ['settings'] });
     },
     onError: (e: any) => toast.error('خطأ: ' + e.message),
@@ -102,8 +104,13 @@ export default function Settings() {
     draft[key] ?? (settings?.[key] ?? 'true') === 'true';
 
   const vatValue = vatDraft !== '' ? vatDraft : (settings?.vat_percent ?? '0');
+  const storeNameValue = storeNameDraft ?? settings?.store_name ?? '';
   const onSave = () =>
-    save.mutate({ ...draft, ...(vatDraft !== '' ? { vat_percent: vatValue } : {}) });
+    save.mutate({
+      ...draft,
+      ...(vatDraft !== '' ? { vat_percent: vatValue } : {}),
+      ...(storeNameDraft !== null ? { store_name: storeNameValue.trim() } : {}),
+    });
 
   return (
     <div className="p-4 sm:p-6">
@@ -122,6 +129,22 @@ export default function Settings() {
       <Card>
         <CardContent className="space-y-6 p-6">
           {isLoading && <div className="py-8 text-center text-slate-400">جارٍ التحميل…</div>}
+
+          {!isLoading && (
+            <div className="rounded-xl border border-slate-200 p-4">
+              <div className="font-bold text-slate-900">اسم المحل</div>
+              <div className="mt-1 text-sm text-slate-500">
+                يظهر في شاشة الدخول والقائمة والفواتير المطبوعة ورسائل العملاء.
+              </div>
+              <input
+                type="text"
+                maxLength={120}
+                value={storeNameValue}
+                onChange={(e) => setStoreNameDraft(e.target.value)}
+                className="mt-3 h-10 w-full max-w-md rounded-lg border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none"
+              />
+            </div>
+          )}
 
           {!isLoading && (
             <div className="rounded-xl border border-slate-200 p-4">

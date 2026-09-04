@@ -9,7 +9,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, confirmDialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { useInvoices, useInvoice, usePaymentMethods } from '@/hooks/useData';
+import { useInvoices, useInvoice, usePaymentMethods, useSettings } from '@/hooks/useData';
 import { usePagination } from '@/hooks/usePagination';
 import { api } from '@/lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -17,6 +17,7 @@ import { useOfflineStore } from '@/stores/offline';
 import { fmtDateTime, fmtMoney, methodColor, methodName, STATUS_BADGE } from '@/lib/utils';
 import { can } from '@/stores/auth';
 import { copyInvoiceText, shareInvoiceWhatsApp } from '@/lib/invoiceShare';
+import { storeName } from '@/lib/branding';
 
 export default function Invoices() {
   const [search, setSearch] = useState('');
@@ -191,11 +192,13 @@ export default function Invoices() {
 function InvoiceDetail({ id, onClose }: { id: number; onClose: () => void }) {
   const { data: inv } = useInvoice(id);
   const { data: payMethods } = usePaymentMethods();
+  const { data: settings } = useSettings();
+  const name = storeName(settings);
 
   const sendInvoice = () => {
     if (!inv) return;
-    if (!shareInvoiceWhatsApp(inv, inv.customerPhone)) {
-      const ok = copyInvoiceText(inv);
+    if (!shareInvoiceWhatsApp(inv, inv.customerPhone, name)) {
+      const ok = copyInvoiceText(inv, name);
       toast[ok ? 'info' : 'error'](ok ? 'نسخنا نص الفاتورة — ألصقه للعميل' : 'لا يوجد رقم موبايل للعميل');
     }
   };

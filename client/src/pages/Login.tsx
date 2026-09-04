@@ -5,6 +5,8 @@ import { useAuth } from '@/stores/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input, Label } from '@/components/ui/input';
+import { usePublicSettings } from '@/hooks/useData';
+import { storeName } from '@/lib/branding';
 
 export default function Login() {
   const { login, loading } = useAuth();
@@ -13,6 +15,8 @@ export default function Login() {
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [error, setError] = useState('');
+  const { data: settings } = usePublicSettings();
+  const name = storeName(settings);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,7 +37,7 @@ export default function Login() {
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-lg shadow-brand-600/25">
               <Gem className="h-8 w-8" />
             </div>
-            <h1 className="text-xl font-extrabold text-slate-900">نظام محل السبائك والمشغولات</h1>
+            <h1 className="text-xl font-extrabold text-slate-900">نظام {name}</h1>
             <p className="text-sm text-slate-500">إدارة المخزون، التسعير اليومي، والمبيعات</p>
           </div>
 

@@ -42,6 +42,13 @@ export function useSettings() {
   });
 }
 
+export function usePublicSettings() {
+  return useQuery({
+    queryKey: ['settings', 'public'],
+    queryFn: () => api<Pick<AppSettings, 'store_name'>>('/api/settings/public'),
+  });
+}
+
 export function useLocations() {
   return useQuery({
     queryKey: ['locations'],

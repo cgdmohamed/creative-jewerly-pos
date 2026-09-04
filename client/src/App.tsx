@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuth } from '@/stores/auth';
@@ -19,6 +20,8 @@ import PaymentMethods from '@/pages/PaymentMethods';
 import Settings from '@/pages/Settings';
 import Customers from '@/pages/Customers';
 import WooCommerce from '@/pages/WooCommerce';
+import { usePublicSettings } from '@/hooks/useData';
+import { storeName } from '@/lib/branding';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -32,9 +35,18 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function BrandTitle() {
+  const { data: settings } = usePublicSettings();
+  useEffect(() => {
+    document.title = `نظام ${storeName(settings)}`;
+  }, [settings]);
+  return null;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <BrandTitle />
       <HashRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
