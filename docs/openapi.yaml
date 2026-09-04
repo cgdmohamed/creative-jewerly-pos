@@ -1,0 +1,2732 @@
+openapi: 3.0.3
+info:
+  title: نظام إدارة محل السبائك والمشغولات — API
+  description: |
+    REST API لنظام إدارة محل الذهب والفضة: مخزون مركزي، تسعير يومي، فروع متعددة،
+    نقاط بيع (POS)، حجوزات، جرد، شيفتات، تقارير، ومزامنة مع WooCommerce.
+
+    ## المصادقة
+    - جميع النقاط تحتاج `Authorization: Bearer <token>` ما عدا `/api/auth/login` و `/api/health`.
+    - توكن JWT (خوارزمية HS256، صلاحية 12 ساعة) يُحصل عليه من `/api/auth/login`.
+    - لكل مسؤول صلاحيات (permissions) تُحمّل مع كائن الموظف عند الدخول.
+      النقاط المحمية بصلاحية محددة موثّقة بـ «Requires permission» في الوصف،
+      وترجع `403 {error:"forbidden"}` عند غيابها.
+
+    ## الأخطاء
+    جميع الأخطاء تُرجع JSON على الصورة: `{"error": "<code>"}` مع اختياري
+    `message` (نص عربي قابل للعرض) و `detail` (لأخطاء الاتصال) و `refs` (للحذف المقيّد).
+    الكود الداخلي في `error` ثابت وقابل للبرمجة عليه.
+
+    ## توكن الدخول
+    استخدم `/api/auth/login` بالحسابات الأولية (PIN: `1234`):
+    | username | الدور |
+    |---|---|
+    | `manager` | مدير المحل |
+    | `cashier` | كاشير |
+    | `social` | سوشيال |
+  version: 1.0.0
+  contact:
+    name: Jewelry Store System
+
+servers:
+  - url: http://localhost:4001
+    description: تطوير (Vite proxy)
+  - url: https://your-domain.example
+    description: إنتاج
+
+tags:
+  - name: Health
+    description: فحص الصحة
+  - name: Auth
+    description: المصادقة ورمز PIN
+  - name: Dashboard
+    description: لوحة التحكم والتنبيهات
+  - name: Employees
+    description: الموظفون والأدوار
+  - name: Locations
+    description: الفروع والأقسام
+  - name: Items
+    description: المخزون — السبائك والمشغولات
+  - name: Prices
+    description: التسعير اليومي
+  - name: Movements
+    description: حركات النقل بين الفروع
+  - name: StockCounts
+    description: الجرد
+  - name: StockLimits
+    description: حدود المخزون
+  - name: Invoices
+    description: الفواتير والمبيعات والإرجاع
+  - name: Reservations
+    description: الحجوزات بالعربون
+  - name: Shifts
+    description: الشيفتات وتسوية النقدية
+  - name: Customers
+    description: العملاء
+  - name: PaymentMethods
+    description: طرق الدفع
+  - name: Settings
+    description: إعدادات النظام
+  - name: Reports
+    description: التقارير
+  - name: Sync
+    description: مزامنة العمليات دون اتصال
+  - name: WooCommerce
+    description: تكامل WooCommerce
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: فحص صحة الخدمة (بدون مصادقة)
+      security: []
+      responses:
+        '200':
+          description: الخدمة تعمل
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  time: { type: string, format: date-time }
+
+  /api/docs/openapi.yaml:
+    get:
+      tags: [Health]
+      summary: ملف OpenAPI/Swagger لهذا التوثيق (بدون مصادقة)
+      security: []
+      responses:
+        '200':
+          description: ملف YAML
+          content:
+            text/yaml:
+              schema: { type: string }
+
+  # ------------------------------------------------------------------
+  # Auth
+  # ------------------------------------------------------------------
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: تسجيل الدخول بالاسم/الهاتف/رقم الموظف + PIN
+      description: |
+        يبحث في `username` أو `phone` أو `employee_no`. معدّل الطلب:
+        8 محاولات لكل 15 دقيقة (429 `rate.limited`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, pin]
+              properties:
+                identifier: { type: string, example: manager }
+                pin: { type: string, example: '1234' }
+      responses:
+        '200':
+          description: نجاح الدخول
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: بيانات غير صحيحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: الموظف غير نشط (`auth.inactive`)
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: بيانات الموظف الحالي من التوكن
+      responses:
+        '200':
+          description: الموظف الحالي
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthEmployee'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/change-pin:
+    post:
+      tags: [Auth]
+      summary: تغيير رمز PIN الخاص بالموظف الحالي
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPin, newPin]
+              properties:
+                currentPin: { type: string }
+                newPin: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/verify-pin:
+    post:
+      tags: [Auth]
+      summary: تحقق من PIN دون إصدار توكن (لفتح قفل الشاشة)
+      description: "معدّل الطلب: 20 محاولة / 15 دقيقة."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pin]
+              properties:
+                pin: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ------------------------------------------------------------------
+  # Dashboard + Alerts
+  # ------------------------------------------------------------------
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: إحصاءات لوحة التحكم (متاحة لكل موظف)
+      description: مبيعات آخر 14 يوم + توزيع حسب المعدن وطريقة الدفع + قيمة المخزون.
+      responses:
+        '200':
+          description: إحصاءات
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  daily:
+                    type: array
+                    items: { $ref: '#/components/schemas/DailySales' }
+                  byMetal:
+                    type: array
+                    items: { $ref: '#/components/schemas/ByMetal' }
+                  byMethod:
+                    type: array
+                    items: { $ref: '#/components/schemas/ByMethod' }
+                  summary:
+                    $ref: '#/components/schemas/SalesSummary'
+                  inventory:
+                    type: object
+                    properties:
+                      byLocation: { type: array, items: { $ref: '#/components/schemas/InventoryByLocation' } }
+                      breakdown: { type: array, items: { $ref: '#/components/schemas/InventoryBreakdown' } }
+
+  /api/alerts:
+    get:
+      tags: [Dashboard]
+      summary: تنبيهات النظام للمراجعة
+      description: |
+        أنواع التنبيهات (`key`):
+        - `open_shifts` (warning) — شيفتات مفتوحة → `/shifts`
+        - `open_stock_counts` (warning) — جرد غير مكتمل → `/stock-counts`
+        - `placeholder_weight` (high) — قطع بوزن افتراضي 1g لم يُحدَّد بعد → `/items`
+        - `no_price_today` (high) — قطع متاحة بدون سعر اليوم → `/pricing`
+      responses:
+        '200':
+          description: قائمة التنبيهات
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items: { $ref: '#/components/schemas/Alert' }
+                  updatedAt: { type: string, format: date-time }
+
+  # ------------------------------------------------------------------
+  # Employees
+  # ------------------------------------------------------------------
+  /api/employees/roles:
+    get:
+      tags: [Employees]
+      summary: قائمة الأدوار (manager / cashier / social)
+      responses:
+        '200':
+          description: الأدوار
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Role' }
+
+  /api/employees:
+    get:
+      tags: [Employees]
+      summary: قائمة الموظفين
+      description: "Requires permission: `employees.manage`"
+      responses:
+        '200':
+          description: الموظفون (يتضمن `roleCode`, `roleName`, `locationName`)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Employee' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Employees]
+      summary: إنشاء موظف
+      description: "Requires permission: `employees.manage`. يُعيد 409 `duplicate` عند تكرار `username`/`employeeNo`/`phone`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeCreate'
+      responses:
+        '201':
+          description: تم الإنشاء
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  employeeNo: { type: string }
+                  fullName: { type: string }
+                  username: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/employees/{id}:
+    put:
+      tags: [Employees]
+      summary: تعديل موظف
+      description: "Requires permission: `employees.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeUpdate'
+      responses:
+        '200':
+          description: الموظف بعد التعديل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Employee'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/employees/{id}/reset-pin:
+    post:
+      tags: [Employees]
+      summary: إعادة تعيين رمز PIN لموظف
+      description: "Requires permission: `employees.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pin]
+              properties:
+                pin: { type: string, description: رمز PIN الجديد }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ------------------------------------------------------------------
+  # Locations & Categories
+  # ------------------------------------------------------------------
+  /api/locations:
+    get:
+      tags: [Locations]
+      summary: قائمة الفروع (بما فيها غير النشط)
+      responses:
+        '200':
+          description: الفروع
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Location' }
+    post:
+      tags: [Locations]
+      summary: إضافة فرع
+      description: "Requires permission: `locations.manage`. يُعيد 409 `duplicate` عند تكرار الكود."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, nameAr]
+              properties:
+                code: { type: string, description: يُحوَّل لأحرف كبيرة، مثال MAIN }
+                nameAr: { type: string }
+                nameEn: { type: string }
+      responses:
+        '201':
+          description: الفرع الجديد
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/locations/{id}:
+    put:
+      tags: [Locations]
+      summary: تعديل فرع
+      description: "Requires permission: `locations.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+                nameAr: { type: string }
+                nameEn: { type: string }
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: الفرع بعد التعديل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Locations]
+      summary: حذف فرع (مع نقل المنتجات/الحركات)
+      description: |
+        Requires permission: `locations.manage`.
+        - 409 `locations.in_use` إذا كان على الفرع موظفون/فواتير/شيفتات/جرد.
+        - إذا كان للفرع منتجات أو حركات نقل فيجب تمرير `moveToLocationId`
+          ويتم نقل المنتجات وحركات النقل (المتجهة والمنطلقة) إلى الفرع المستهدف.
+        - يُعيد `movedItems` و `movedMovements`.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                moveToLocationId:
+                  type: integer
+                  description: الفرع المستهدف (مطلوب إذا كان للفرع منتجات أو حركات)
+      responses:
+        '200':
+          description: تم الحذف
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  movedItems: { type: integer, example: 5 }
+                  movedMovements: { type: integer, example: 2 }
+        '400':
+          description: moveTo.required / moveTo.same / moveTo.notfound
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/categories:
+    get:
+      tags: [Locations]
+      summary: قائمة الأقسام (سبيكة، خاتم، سلسلة …)
+      responses:
+        '200':
+          description: الأقسام
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Category' }
+    post:
+      tags: [Locations]
+      summary: إضافة قسم
+      description: "Requires permission: `inventory.manage`"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, nameAr]
+              properties:
+                code: { type: string }
+                nameAr: { type: string }
+                nameEn: { type: string }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/categories/{id}:
+    put:
+      tags: [Locations]
+      summary: تعديل قسم
+      description: "Requires permission: `inventory.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+                nameAr: { type: string }
+                nameEn: { type: string }
+                isActive: { type: boolean }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ------------------------------------------------------------------
+  # Items
+  # ------------------------------------------------------------------
+  /api/items:
+    get:
+      tags: [Items]
+      summary: قائمة القطع (مع الفلاتر)
+      description: |
+        يصفّي النشط فقط افتراضيًا. `includeInactive=true` يعرض المؤرشفة أيضًا.
+        `status` من: available / reserved / sold / in_transit.
+      parameters:
+        - { name: locationId, in: query, schema: { type: integer } }
+        - { name: status, in: query, schema: { type: string, enum: [available, reserved, sold, in_transit] } }
+        - { name: metalType, in: query, schema: { type: string, enum: [gold, silver] } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: includeInactive, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: القطع
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Item' }
+    post:
+      tags: [Items]
+      summary: إضافة قطعة
+      description: "Requires permission: `inventory.manage`. يُعيد 409 `duplicate` عند تكرار `code`/`barcode`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemCreate'
+      responses:
+        '201':
+          description: القطعة الجديدة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/items/{id}:
+    get:
+      tags: [Items]
+      summary: تفاصيل قطعة
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Items]
+      summary: تعديل قطعة
+      description: |
+        Requires permission: `inventory.manage`.
+        عند ضبط `weightG` حقيقي تتم إزالة علامة «الوزن الافتراضي» من الملاحظات
+        تلقائيًا (يختفي تنبيه المراجعة).
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemUpdate'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Items]
+      summary: حذف قطعة (حذف مادي آمن فقط)
+      description: |
+        Requires permission: `inventory.manage`.
+        409 `items.in_use` إذا كانت مرتبطة بفواتير/حجوزات/حركات/جرد — عندها
+        استخدم الأرشفة بدلاً من الحذف.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/items/{id}/audit:
+    get:
+      tags: [Items]
+      summary: سجل القطعة الكامل (حالات، حركات، مبيعات، حجوزات)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          description: السجل
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  statuses:
+                    type: array
+                    items: { $ref: '#/components/schemas/ItemStatusChange' }
+                  movements:
+                    type: array
+                    items: { $ref: '#/components/schemas/Movement' }
+                  sales:
+                    type: array
+                    items: { $ref: '#/components/schemas/ItemSaleRef' }
+                  reservations:
+                    type: array
+                    items: { $ref: '#/components/schemas/Reservation' }
+
+  /api/items/{id}/photo:
+    post:
+      tags: [Items]
+      summary: رفع صورة القطعة (multipart/form-data)
+      description: |
+        Requires permission: `inventory.manage`.
+        الحقل: `file`. الصيغ المسموحة: jpeg/png/webp بحجم أقصى 5MB.
+        يُعيد المسار العام للصورة.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: تم الرفع
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  photoUrl: { type: string, example: /uploads/item-1720....jpg }
+        '400':
+          description: missing:file أو file.type
+
+  /api/items/{id}/archive:
+    post:
+      tags: [Items]
+      summary: أرشفة / استعادة قطعة (حذف منطقي)
+      description: |
+        Requires permission: `inventory.manage`.
+        `active: true` استعادة، `active: false` أرشفة (تختفي من POS والقوائم وتبقى بياناتها).
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                active: { type: boolean, default: true }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+
+  /api/items/{id}/status:
+    post:
+      tags: [Items]
+      summary: تغيير حالة القطعة مع سبب تدقيقي
+      description: "Requires permission: `inventory.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [available, reserved, sold, in_transit] }
+                reason: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: bad.status
+
+  # ------------------------------------------------------------------
+  # Prices
+  # ------------------------------------------------------------------
+  /api/prices/active:
+    get:
+      tags: [Prices]
+      summary: أسعار اليوم النشطة (أو لتاريخ محدد)
+      parameters:
+        - { name: date, in: query, schema: { type: string, format: date, example: '2026-08-08' } }
+      responses:
+        '200':
+          description: الأسعار النشطة
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PriceRow' }
+
+  /api/prices/history:
+    get:
+      tags: [Prices]
+      summary: سجل الأسعار (آخر 500 إدخال)
+      responses:
+        '200':
+          description: السجل
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PriceRow' }
+
+  /api/prices:
+    post:
+      tags: [Prices]
+      summary: ضبط سعر اليوم (سجل تراكمي لا يُستبدل)
+      description: |
+        Requires permission: `pricing.set`.
+        يُغلق السعر النشط السابق لنفس (معدن, عيار) ويُفتح سجل جديد.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metalType, pricePerGram]
+              properties:
+                metalType: { type: string, enum: [gold, silver] }
+                carat: { type: string, description: مثال 21 / 24 / 925 }
+                pricePerGram: { type: number, example: 9500 }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceRow'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ------------------------------------------------------------------
+  # Movements
+  # ------------------------------------------------------------------
+  /api/movements:
+    get:
+      tags: [Movements]
+      summary: حركات النقل (آخر 500)
+      parameters:
+        - { name: itemId, in: query, schema: { type: integer } }
+        - { name: status, in: query, schema: { type: string, enum: [in_transit, received, cancelled] } }
+      responses:
+        '200':
+          description: الحركات
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Movement' }
+    post:
+      tags: [Movements]
+      summary: إنشاء حركة نقل بين فروع
+      description: |
+        Requires permission: `movement.create`.
+        تزيد `in_transit_qty` وتصبح القطعة `in_transit` حتى تأكيد الاستلام.
+        409 `items.not_available` إذا كانت الكمية المتاحة غير كافية.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemId, toLocationId]
+              properties:
+                itemId: { type: integer }
+                toLocationId: { type: integer }
+                quantity: { type: integer, default: 1 }
+                reason: { type: string }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Movement'
+        '400':
+          description: missing / bad.quantity / movements.same_location
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/movements/{id}/receive:
+    post:
+      tags: [Movements]
+      summary: تأكيد استلام النقل (إلزامي لإتمامه)
+      description: |
+        Requires permission: `movement.receive`.
+        ينقل القطعة فعليًا إلى الفرع الوجهة ويعيد حساب الحالة.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Movement'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: movements.not_in_transit
+
+  # ------------------------------------------------------------------
+  # Stock counts
+  # ------------------------------------------------------------------
+  /api/stock-counts:
+    get:
+      tags: [StockCounts]
+      summary: قائمة جلسات الجرد (آخر 200)
+      responses:
+        '200':
+          description: الجلسات
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/StockCount' }
+    post:
+      tags: [StockCounts]
+      summary: بدء جلسة جرد لفرع (يلتقط قائمة الكميات المتوقعة)
+      description: "Requires permission: `stockcount.manage`"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId]
+              properties:
+                locationId: { type: integer }
+                notes: { type: string }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockCount'
+
+  /api/stock-counts/{id}:
+    get:
+      tags: [StockCounts]
+      summary: تفاصيل الجلسة — المتوقع + غير المتوقع
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          description: التفاصيل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockCountDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stock-counts/{id}/items:
+    post:
+      tags: [StockCounts]
+      summary: تسجيل وجود/غياب قطعة (أو قطعة غير متوقعة)
+      description: |
+        Requires permission: `stockcount.manage`.
+        إن لم تكن القطعة في قائمة المتوقع تُسجَّل كـ `unexpected`.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemId]
+              properties:
+                itemId: { type: integer }
+                countedStatus:
+                  type: string
+                  enum: [found, missing, unexpected]
+                countedQty: { type: integer }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+
+  /api/stock-counts/{id}/complete:
+    post:
+      tags: [StockCounts]
+      summary: إتمام الجرد
+      description: "Requires permission: `stockcount.manage`. 409 `stockcount.not_open` إن لم تكن الجلسة جارية."
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/stock-counts/{id}/report:
+    get:
+      tags: [StockCounts]
+      summary: تقرير الفروقات (ناقص/زائد) مُقوَّم بسعر اليوم
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          description: التقرير
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockCountReport'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ------------------------------------------------------------------
+  # Stock limits
+  # ------------------------------------------------------------------
+  /api/stock-limits:
+    get:
+      tags: [StockLimits]
+      summary: حدود المخزون (min/max) لكل فرع+معدن+عيار
+      responses:
+        '200':
+          description: الحدود
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/StockLimit' }
+    post:
+      tags: [StockLimits]
+      summary: إنشاء/تحديث حد مخزون (upsert بالفرع+معدن+عيار)
+      description: "Requires permission: `stockcount.manage`"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId, metalType]
+              properties:
+                locationId: { type: integer }
+                metalType: { type: string, enum: [gold, silver] }
+                carat: { type: string }
+                minQty: { type: integer, default: 0 }
+                maxQty: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockLimit'
+
+  /api/stock-limits/{id}:
+    delete:
+      tags: [StockLimits]
+      summary: حذف حد مخزون
+      description: "Requires permission: `stockcount.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+
+  # ------------------------------------------------------------------
+  # Invoices
+  # ------------------------------------------------------------------
+  /api/invoices:
+    get:
+      tags: [Invoices]
+      summary: قائمة الفواتير (آخر 300 مع فلاتر)
+      description: |
+        `status`: active / returned. `search` يبحث في رقم الفاتورة.
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [active, returned] } }
+        - { name: locationId, in: query, schema: { type: integer } }
+        - { name: employeeId, in: query, schema: { type: integer } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: method, in: query, schema: { type: string, description: كود طريقة الدفع } }
+      responses:
+        '200':
+          description: الفواتير
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Invoice' }
+    post:
+      tags: [Invoices]
+      summary: إنشاء بيع (POS)
+      description: |
+        Requires permission: `invoice.create`.
+        - يسعّر كل قطعة بسعر اليوم (409 `prices.missing_today` إن لم يوجد سعر).
+        - خصم على المصنعية فقط: نسبة أو مبلغ ثابت.
+        - تجاوز سقف الخصم للموظف يتطلب `managerPin` (403 `discount.requires_manager`).
+        - إن وجد حجز نشط على قطعة مباعة يُكتمل تلقائيًا.
+        - رقم الفاتورة تلقائي: `INV-YYYYMMDD-####`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvoiceCreate'
+      responses:
+        '201':
+          description: الفاتورة الكاملة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          description: missing:items / bad.quantity / bad.discount
+        '403':
+          description: discount.disabled_for_cashier / discount.exceeds_cap / discount.requires_manager
+        '404':
+          description: items.notfound:{id} / customers.notfound
+        '409':
+          description: items.not_available:{code} / prices.missing_today
+
+  /api/invoices/{id}:
+    get:
+      tags: [Invoices]
+      summary: فاتورة كاملة (مع السطور والمدفوعات)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          description: الفاتورة مع `items` و `payments`
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Invoice'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/InvoiceItem' }
+                      payments:
+                        type: array
+                        items: { $ref: '#/components/schemas/Payment' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/invoices/{id}/return:
+    post:
+      tags: [Invoices]
+      summary: إرجاع / إلغاء فاتورة
+      description: |
+        Requires permission: `invoice.return`.
+        يعيد الكميات إلى المخزون مع حفظ السبب. Idempotent — إرجاع فاتورة
+        مُرجعة سابقًا يعيدها كما هي (آمن لتكرار محاولات المزامنة).
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: تم الإرجاع
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+
+  # ------------------------------------------------------------------
+  # Reservations
+  # ------------------------------------------------------------------
+  /api/reservations:
+    get:
+      tags: [Reservations]
+      summary: قائمة الحجوزات (آخر 300)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [active, completed, cancelled] } }
+      responses:
+        '200':
+          description: الحجوزات
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Reservation' }
+    post:
+      tags: [Reservations]
+      summary: إنشاء حجز بالعربون
+      description: |
+        Requires permission: `reservation.manage`.
+        يثبّت `reserved_qty` للقطعة. 409 `items.not_available` إن كانت الكمية غير كافية.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationCreate'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/reservations/{id}/cancel:
+    post:
+      tags: [Reservations]
+      summary: إلغاء حجز (يُطلق الكمية المحجوزة)
+      description: "Requires permission: `reservation.manage`. 409 `reservation.not_active` إن لم يكن الحجز نشطًا."
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ------------------------------------------------------------------
+  # Shifts
+  # ------------------------------------------------------------------
+  /api/shifts:
+    get:
+      tags: [Shifts]
+      summary: قائمة الشيفتات (آخر 300 مع التسوية إن وُجدت)
+      responses:
+        '200':
+          description: الشيفتات
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Shift' }
+
+  /api/shifts/current:
+    get:
+      tags: [Shifts]
+      summary: الشيفت المفتوح الحالي للموظف (أو null)
+      description: يتضمن `methodTotals` (الإجمالي المتوقع لكل طريقة دفع حتى الآن).
+      responses:
+        '200':
+          description: الشيفت الحالي أو null
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Shift'
+                  - type: object
+                    properties:
+                      methodTotals:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            code: { type: string }
+                            name: { type: string }
+                            expected: { type: number }
+
+  /api/shifts/open:
+    post:
+      tags: [Shifts]
+      summary: فتح شيفت
+      description: يعيد الشيفت المفتوح الحالي إن وُجد (لا يفتح شيفتين).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                locationId: { type: integer }
+      responses:
+        '200':
+          description: الشيفت (جديد أو مفتوح سابقًا)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shift'
+        '201':
+          description: شيفت جديد
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shift'
+
+  /api/shifts/{id}/close:
+    post:
+      tags: [Shifts]
+      summary: إغلاق الشيفت مع تسوية نقدية لكل طرق الدفع
+      description: |
+        Requires permission: `shift.close`.
+        يقارن الموجود الفعلي بالمتوقع لكل طريقة دفع ويحسب الفرق الإجمالي.
+        يُقبل `countedCash` أو `counted` (خريطة method → المبلغ الفعلي).
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                countedCash: { type: number, description: المبلغ النقدي الفعلي }
+                counted:
+                  type: object
+                  description: المبالغ الفعلية لكل طريقة دفع (code → amount)
+                  additionalProperties: { type: number }
+                notes: { type: string }
+      responses:
+        '200':
+          description: نتيجة التسوية
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shiftId: { type: integer }
+                  expectedCash: { type: number }
+                  countedCash: { type: number }
+                  difference: { type: number }
+                  totalDifference: { type: number }
+                  methods:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReconMethod' }
+        '400':
+          description: missing:counted
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: shifts.closed
+
+  # ------------------------------------------------------------------
+  # Customers
+  # ------------------------------------------------------------------
+  /api/customers:
+    get:
+      tags: [Customers]
+      summary: قائمة العملاء (بحث اختياري) — متاحة لأي موظف
+      parameters:
+        - { name: search, in: query, schema: { type: string, description: بحث في الاسم/الهاتف/البريد } }
+      responses:
+        '200':
+          description: العملاء مع إحصاءات (آخر 200)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Customer' }
+    post:
+      tags: [Customers]
+      summary: إنشاء عميل
+      description: "Requires permission: `customers.manage`. يُقبل الاسم أو الهاتف على الأقل."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerWrite'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '400':
+          description: missing:name.or.phone
+
+  /api/customers/{id}:
+    get:
+      tags: [Customers]
+      summary: تفاصيل عميل مع الإحصاءات
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Customers]
+      summary: تعديل عميل
+      description: "Requires permission: `customers.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerWrite'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/customers/{id}/invoices:
+    get:
+      tags: [Customers]
+      summary: فواتير عميل (آخر 100)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          description: الفواتير (مع cashierName, locationName)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Invoice' }
+
+  /api/customers/{id}/reservations:
+    get:
+      tags: [Customers]
+      summary: حجوزات عميل (آخر 100)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Reservation' }
+
+  # ------------------------------------------------------------------
+  # Payment methods
+  # ------------------------------------------------------------------
+  /api/payment-methods:
+    get:
+      tags: [PaymentMethods]
+      summary: طرق الدفع مع إحصاء استخدام 30 يومًا
+      responses:
+        '200':
+          description: الطرق
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PaymentMethod' }
+    post:
+      tags: [PaymentMethods]
+      summary: إضافة طريقة دفع
+      description: "Requires permission: `settings.manage`. يُستنتج الكود من `code` أو `nameAr`. 409 `payment_methods.duplicate`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nameAr]
+              properties:
+                nameAr: { type: string }
+                nameEn: { type: string }
+                code: { type: string }
+                color: { type: string, default: '#64748b' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentMethod'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/payment-methods/{id}:
+    patch:
+      tags: [PaymentMethods]
+      summary: تعديل / إيقاف طريقة دفع (لا يُحذف للحفاظ على التاريخ)
+      description: "Requires permission: `settings.manage`"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nameAr: { type: string }
+                nameEn: { type: string }
+                color: { type: string }
+                isActive: { type: boolean }
+                sortOrder: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentMethod'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ------------------------------------------------------------------
+  # Settings
+  # ------------------------------------------------------------------
+  /api/settings:
+    get:
+      tags: [Settings]
+      summary: إعدادات النظام (خريطة key → value)
+      responses:
+        '200':
+          description: الإعدادات
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string }
+    put:
+      tags: [Settings]
+      summary: تحديث إعدادات الميزات
+      description: |
+        Requires permission: `settings.manage`.
+        الحقول المقبولة: `cashier_discount_enabled` (bool)،
+        `cashier_cap_override_enabled` (bool)، `vat_percent` (0–100).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cashier_discount_enabled: { type: boolean }
+                cashier_cap_override_enabled: { type: boolean }
+                vat_percent: { type: number }
+      responses:
+        '200':
+          description: القيم المحدّثة
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string }
+
+  # ------------------------------------------------------------------
+  # Reports (reports.view)
+  # ------------------------------------------------------------------
+  /api/reports/inventory-value:
+    get:
+      tags: [Reports]
+      summary: قيمة المخزون الحالية (وزن × سعر اليوم + المصنعية) حسب الفرع
+      responses:
+        '200':
+          description: القيمة
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  byLocation:
+                    type: array
+                    items: { $ref: '#/components/schemas/InventoryByLocation' }
+                  breakdown:
+                    type: array
+                    items: { $ref: '#/components/schemas/InventoryBreakdown' }
+
+  /api/reports/sales-overview:
+    get:
+      tags: [Reports]
+      summary: مبيعات آخر 14 يوم (نفس بنية لوحة التحكم)
+      responses:
+        '200':
+          description: الإحصاءات
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days: { type: integer }
+                  daily: { type: array, items: { $ref: '#/components/schemas/DailySales' } }
+                  byMetal: { type: array, items: { $ref: '#/components/schemas/ByMetal' } }
+                  byMethod: { type: array, items: { $ref: '#/components/schemas/ByMethod' } }
+                  summary: { $ref: '#/components/schemas/SalesSummary' }
+
+  /api/reports/payments:
+    get:
+      tags: [Reports]
+      summary: المدفوعات حسب طريقة الدفع (فلاتر تاريخ/طريقة/فرع)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: method, in: query, schema: { type: string } }
+        - { name: locationId, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: التقرير
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  byMethod:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string }
+                        nameAr: { type: string }
+                        color: { type: string }
+                        isActive: { type: boolean }
+                        count: { type: integer }
+                        total: { type: number }
+                        collected: { type: number }
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/Invoice' }
+                  summary:
+                    type: object
+                    properties:
+                      total: { type: number }
+                      count: { type: integer }
+                      avgInvoice: { type: number }
+
+  /api/reports/profitability:
+    get:
+      tags: [Reports]
+      summary: الربحية الحقيقية (فرق سعر المعدن × الوزن + المصنعية − التكلفة)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: التقرير
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        invoiceNo: { type: string }
+                        createdAt: { type: string, format: date-time }
+                        cashierName: { type: string }
+                        itemCodeSnapshot: { type: string }
+                        itemNameSnapshot: { type: string }
+                        metalTypeSnapshot: { type: string }
+                        caratSnapshot: { type: string }
+                        weightGSnapshot: { type: number }
+                        metalPriceSnapshot: { type: number }
+                        metalCostPrice: { type: number }
+                        metalProfit: { type: number }
+                        craftsmanshipCharged: { type: number }
+                        cost: { type: number }
+                        profit: { type: number }
+                        invoiceStatus: { type: string }
+                  summary:
+                    type: object
+                    properties:
+                      totalProfit: { type: number }
+                      invoiceCount: { type: integer }
+
+  /api/reports/slow-stock:
+    get:
+      tags: [Reports]
+      summary: المخزون الراكد (لم يُبع منذ N يوم)
+      parameters:
+        - { name: days, in: query, schema: { type: integer, description: افتراضيًا من الإعدادات (90) } }
+      responses:
+        '200':
+          description: القطع الراكدة
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Item'
+                        - type: object
+                          properties:
+                            locationName: { type: string }
+                            categoryName: { type: string }
+                            daysInStock: { type: integer }
+
+  /api/reports/stock-limits:
+    get:
+      tags: [Reports]
+      summary: حالة حدود المخزون (below / ok / above) لكل فرع+معدن+عيار
+      responses:
+        '200':
+          description: الحالة
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    locationName: { type: string }
+                    metalType: { type: string }
+                    carat: { type: string }
+                    currentQty: { type: integer }
+                    minQty: { type: integer }
+                    maxQty: { type: integer }
+                    status: { type: string, enum: [below, ok, above] }
+
+  /api/reports/discrepancies:
+    get:
+      tags: [Reports]
+      summary: فروقات الجرد من الجولات المكتملة
+      responses:
+        '200':
+          description: الفروقات
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    stockCountId: { type: integer }
+                    startedAt: { type: string, format: date-time }
+                    locationName: { type: string }
+                    startedByName: { type: string }
+                    missingCount: { type: integer }
+                    extraCount: { type: integer }
+                    netValue: { type: number }
+
+  /api/reports/shift-reconciliation:
+    get:
+      tags: [Reports]
+      summary: سجل تسوية الشيفتات
+      responses:
+        '200':
+          description: التسويات
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ShiftReconciliation' }
+
+  /api/reports/today-prices:
+    get:
+      tags: [Reports]
+      summary: أسعار اليوم الحالية (مصدر موحّد)
+      responses:
+        '200':
+          description: الأسعار
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    metalType: { type: string }
+                    carat: { type: string }
+                    pricePerGram: { type: number }
+
+  # ------------------------------------------------------------------
+  # Sync (offline)
+  # ------------------------------------------------------------------
+  /api/sync/pull:
+    get:
+      tags: [Sync]
+      summary: سحب بيانات التخزين المؤقت للعمل دون اتصال
+      description: |
+        يرجع نفس أشكال النقاط الحية لاستخدامها كنسخة احتياطية في POS.
+        يشمل: القطع النشطة، الأسعار النشطة، الفروع النشطة، الإعدادات، العملاء.
+      responses:
+        '200':
+          description: البيانات
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Item' } }
+                  prices: { type: array, items: { $ref: '#/components/schemas/PriceRow' } }
+                  locations: { type: array, items: { $ref: '#/components/schemas/Location' } }
+                  settings:
+                    type: object
+                    additionalProperties: { type: string }
+                  customers: { type: array, items: { $ref: '#/components/schemas/Customer' } }
+                  syncedAt: { type: string, format: date-time }
+
+  /api/sync/outbox:
+    post:
+      tags: [Sync]
+      summary: دفع عمليات أُنجزت دون اتصال (idempotent)
+      description: |
+        يعالج العمليات بالتسلسل ويعيد نتيجة لكل واحدة.
+        `status`: `applied` / `conflict` (القطعة لم تعد متاحة) / `rejected`.
+        إعادة إرسال نفس `opId` لنفس الجهاز تُرجع النتيجة السابقة دون إعادة تطبيق.
+        صلاحية العملية تُفحص ضد الموظف المصدَّق.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ops]
+              properties:
+                ops:
+                  type: array
+                  items:
+                    type: object
+                    required: [deviceId, opId, op, payload]
+                    properties:
+                      deviceId: { type: string }
+                      opId: { type: string, description: معرّف عملية فريد من الجهاز }
+                      op:
+                        type: string
+                        enum: [invoice.create, invoice.return, reservation.create]
+                      payload:
+                        oneOf:
+                          - $ref: '#/components/schemas/InvoiceCreate'
+                          - type: object
+                            description: "لـ invoice.return: { invoiceId, reason }"
+                          - $ref: '#/components/schemas/ReservationCreate'
+      responses:
+        '200':
+          description: نتائج العمليات
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        opId: { type: string }
+                        status: { type: string, enum: [applied, conflict, rejected] }
+                        error: { type: string }
+                        invoiceNo: { type: string }
+                        reservationId: { type: integer }
+
+  # ------------------------------------------------------------------
+  # WooCommerce
+  # ------------------------------------------------------------------
+  /api/woocommerce/config:
+    get:
+      tags: [WooCommerce]
+      summary: إعدادات التكامل الحالية (بدون الأسرار)
+      description: "Requires permission: `woocommerce.manage`"
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WcConfig'
+    put:
+      tags: [WooCommerce]
+      summary: تحديث إعدادات التكامل
+      description: "Requires permission: `woocommerce.manage`. حقلا key/secret الفارغان يُبقيان القيمة المخزنة."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string, format: uri }
+                consumerKey: { type: string }
+                consumerSecret: { type: string }
+                autoSyncEnabled: { type: boolean }
+                autoSyncIntervalMin: { type: integer, minimum: 15 }
+                autoSyncOps:
+                  type: array
+                  items: { type: string, enum: [products.in, stock.push, customers.in, customers.out, orders.in] }
+                weightKg: { type: boolean, description: هل الأوزان تُقرأ بالكيلوجرام }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WcConfig'
+        '400':
+          description: bad.url / missing:config
+
+  /api/woocommerce/test:
+    post:
+      tags: [WooCommerce]
+      summary: اختبار الاتصال بالمتجر
+      description: "Requires permission: `woocommerce.manage`"
+      responses:
+        '200':
+          description: نجح الاتصال
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  info: { type: object }
+                  locationId: { type: integer }
+        '400':
+          description: woocommerce.connection_failed (مع `detail`)
+
+  /api/woocommerce/logs:
+    get:
+      tags: [WooCommerce]
+      summary: سجل عمليات المزامنة
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: السجل
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WcLog' }
+
+  /api/woocommerce/products/import:
+    post:
+      tags: [WooCommerce]
+      summary: استيراد المنتجات من المتجر
+      description: |
+        Requires permission: `woocommerce.manage`.
+        `dryRun=true` يُجري استيرادًا تجريبيًا دون كتابة بيانات.
+        المنتجات بدون معدن تُتخطى؛ بدون وزن تُستورد بوزن 1g افتراضي مع علامة مراجعة.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dryRun: { type: boolean, default: false }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+
+  /api/woocommerce/products/export:
+    post:
+      tags: [WooCommerce]
+      summary: تصدير الكميات والأسعار إلى المتجر
+      description: |
+        Requires permission: `woocommerce.manage`.
+        يدفع `stock_quantity` لكل منتج مرتبط، و `regular_price` المحسوب
+        (معدن + مصنعية + ضريبة) — تُستثنى القطع ذات الوزن الافتراضي.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+
+  /api/woocommerce/customers/import:
+    post:
+      tags: [WooCommerce]
+      summary: استيراد العملاء من المتجر
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+
+  /api/woocommerce/customers/export:
+    post:
+      tags: [WooCommerce]
+      summary: تصدير العملاء إلى المتجر
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+
+  /api/woocommerce/orders/import:
+    post:
+      tags: [WooCommerce]
+      summary: استيراد طلبات المتجر كفواتير محلية
+      description: |
+        Requires permission: `woocommerce.manage`.
+        يستورد الطلبات (processing/completed/on-hold/pending) خلال آخر `days` يوم.
+        يتجاهل الطلبات المستوردة مسبقًا (wc_order_links).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+
+  /api/woocommerce/run-auto:
+    post:
+      tags: [WooCommerce]
+      summary: تشغيل المزامنة التلقائية يدويًا
+      description: |
+        Requires permission: `woocommerce.manage`.
+        يعيد null-results مع `busy` إذا كانت المزامنة معطّلة أو تجري حاليًا أو
+        أن الفاصل الزمني لم ينقضِ بعد.
+      responses:
+        '200':
+          description: النتائج
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  busy: { type: boolean }
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/SyncResult' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: توكن JWT من /api/auth/login (صلاحية 12 ساعة)
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+      description: معرّف رقمي
+
+  responses:
+    Ok:
+      description: نجاح
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: { type: boolean, example: true }
+    Unauthorized:
+      description: غير مصدّق — توكن ناقص أو منتهٍ
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: لا تملك الصلاحية المطلوبة
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: غير موجود
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: تعارض (حالة غير صالحة أو مرجع محجوب)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: طلب غير صالح
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: تجاوزت حد المعدل
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, description: كود خطأ ثابت قابل للبرمجة، مثال notfound / items.in_use }
+        message: { type: string, description: نص عربي قابل للعرض (اختياري) }
+        detail: { type: string, description: تفاصيل إضافية (اختياري) }
+        refs:
+          type: object
+          description: إحصاءات المراجع للحذف المقيّد (اختياري)
+
+    # ---- Auth ----
+    AuthEmployee:
+      type: object
+      properties:
+        id: { type: integer }
+        employeeNo: { type: string }
+        fullName: { type: string }
+        role: { type: string }
+        roleCode: { type: string }
+        locationId: { type: integer, nullable: true }
+        permissions:
+          type: array
+          items: { type: string }
+
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string, description: "JWT للاستخدام في Authorization: Bearer" }
+        employee:
+          type: object
+          properties:
+            id: { type: integer }
+            employeeNo: { type: string }
+            fullName: { type: string }
+            phone: { type: string }
+            role: { type: string }
+            roleCode: { type: string }
+            locationId: { type: integer, nullable: true }
+            locationName: { type: string, nullable: true }
+            discountCapPercent: { type: number }
+            permissions:
+              type: array
+              items: { type: string }
+
+    # ---- Employees ----
+    Role:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, enum: [manager, cashier, social] }
+        nameAr: { type: string }
+        nameEn: { type: string }
+
+    Employee:
+      type: object
+      properties:
+        id: { type: integer }
+        employeeNo: { type: string }
+        fullName: { type: string }
+        phone: { type: string, nullable: true }
+        hireDate: { type: string, format: date }
+        status: { type: string, enum: [active, inactive] }
+        roleId: { type: integer }
+        roleCode: { type: string }
+        roleName: { type: string }
+        locationId: { type: integer, nullable: true }
+        locationName: { type: string, nullable: true }
+        discountCapPercent: { type: number }
+        username: { type: string }
+        notes: { type: string, nullable: true }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    EmployeeCreate:
+      type: object
+      required: [employeeNo, fullName, username, pin]
+      properties:
+        employeeNo: { type: string }
+        fullName: { type: string }
+        username: { type: string }
+        pin: { type: string, description: رمز PIN 4 خانات (يُخزّن مشفّرًا) }
+        phone: { type: string }
+        hireDate: { type: string, format: date }
+        status: { type: string, enum: [active, inactive], default: active }
+        roleId: { type: integer }
+        locationId: { type: integer }
+        discountCapPercent: { type: number, default: 0 }
+        notes: { type: string }
+
+    EmployeeUpdate:
+      type: object
+      properties:
+        fullName: { type: string }
+        phone: { type: string }
+        status: { type: string, enum: [active, inactive] }
+        roleId: { type: integer }
+        locationId: { type: integer }
+        discountCapPercent: { type: number }
+        notes: { type: string }
+
+    # ---- Locations / Categories ----
+    Location:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: MAIN }
+        nameAr: { type: string }
+        nameEn: { type: string, nullable: true }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    Category:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: RING }
+        nameAr: { type: string }
+        nameEn: { type: string, nullable: true }
+        isActive: { type: boolean }
+
+    # ---- Items ----
+    Item:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        barcode: { type: string, nullable: true }
+        name: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        photoUrl: { type: string, nullable: true, description: مسار /uploads/... }
+        categoryId: { type: integer, nullable: true }
+        categoryCode: { type: string, nullable: true }
+        categoryName: { type: string, nullable: true }
+        size: { type: string, nullable: true }
+        metalType: { type: string, enum: [gold, silver] }
+        carat: { type: string, nullable: true, description: 21 / 24 / 925 }
+        weightG: { type: number }
+        stoneWeightG: { type: number }
+        craftsmanshipType: { type: string, enum: [fixed, percent] }
+        craftsmanshipValue: { type: number }
+        cost: { type: number, nullable: true }
+        metalPriceAtAdd: { type: number, nullable: true }
+        sourceSupplier: { type: string, nullable: true }
+        status: { type: string, enum: [available, reserved, sold, in_transit] }
+        physicalStatus: { type: string, enum: [new, used] }
+        notes: { type: string, nullable: true }
+        manufacturingVarianceG: { type: number }
+        quantity: { type: integer }
+        reservedQty: { type: integer }
+        inTransitQty: { type: integer }
+        availableQty: { type: integer, description: quantity − reserved − in_transit (مُحسّب) }
+        currentLocationId: { type: integer, nullable: true }
+        locationCode: { type: string, nullable: true }
+        locationName: { type: string, nullable: true }
+        isActive: { type: boolean }
+        wcProductId: { type: integer, nullable: true }
+        wcLastSyncedAt: { type: string, format: date-time, nullable: true }
+        createdBy: { type: integer, nullable: true }
+        createdByName: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ItemCreate:
+      type: object
+      required: [code, metalType, weightG]
+      properties:
+        code: { type: string }
+        barcode: { type: string }
+        name: { type: string }
+        description: { type: string }
+        photoUrl: { type: string }
+        categoryId: { type: integer }
+        size: { type: string }
+        metalType: { type: string, enum: [gold, silver] }
+        carat: { type: string }
+        weightG: { type: number, exclusiveMinimum: 0 }
+        stoneWeightG: { type: number, default: 0 }
+        craftsmanshipType: { type: string, enum: [fixed, percent], default: fixed }
+        craftsmanshipValue: { type: number, default: 0 }
+        cost: { type: number }
+        metalPriceAtAdd: { type: number }
+        sourceSupplier: { type: string }
+        physicalStatus: { type: string, enum: [new, used], default: new }
+        notes: { type: string }
+        manufacturingVarianceG: { type: number, default: 0 }
+        quantity: { type: integer, default: 1 }
+        locationId: { type: integer }
+        currentLocationId: { type: integer }
+
+    ItemUpdate:
+      type: object
+      properties:
+        barcode: { type: string }
+        name: { type: string }
+        description: { type: string }
+        categoryId: { type: integer }
+        size: { type: string }
+        carat: { type: string }
+        weightG: { type: number, description: ضبطه يزيل علامة «الوزن الافتراضي» من الملاحظات }
+        stoneWeightG: { type: number }
+        craftsmanshipType: { type: string, enum: [fixed, percent] }
+        craftsmanshipValue: { type: number }
+        cost: { type: number }
+        metalPriceAtAdd: { type: number }
+        sourceSupplier: { type: string }
+        physicalStatus: { type: string, enum: [new, used] }
+        notes: { type: string }
+        manufacturingVarianceG: { type: number }
+        quantity: { type: integer, description: تغييره يعيد حساب الحالة تلقائيًا }
+        locationId: { type: integer }
+        currentLocationId: { type: integer }
+
+    ItemStatusChange:
+      type: object
+      properties:
+        id: { type: integer }
+        itemId: { type: integer }
+        fromStatus: { type: string, nullable: true }
+        toStatus: { type: string }
+        reason: { type: string, nullable: true }
+        changedBy: { type: integer, nullable: true }
+        changedByName: { type: string, nullable: true }
+        changedAt: { type: string, format: date-time }
+
+    ItemSaleRef:
+      type: object
+      properties:
+        invoiceId: { type: integer }
+        invoiceNo: { type: string }
+        metalPriceSnapshot: { type: number }
+        lineTotal: { type: number }
+        createdAt: { type: string, format: date-time }
+        cashierName: { type: string, nullable: true }
+        invoiceStatus: { type: string }
+
+    # ---- Prices ----
+    PriceRow:
+      type: object
+      properties:
+        id: { type: integer }
+        metalType: { type: string, enum: [gold, silver] }
+        carat: { type: string, nullable: true }
+        pricePerGram: { type: number }
+        effectiveDate: { type: string, format: date }
+        endDate: { type: string, format: date, nullable: true, description: null = نشط }
+        enteredBy: { type: integer, nullable: true }
+        enteredByName: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    # ---- Movements ----
+    Movement:
+      type: object
+      properties:
+        id: { type: integer }
+        itemId: { type: integer }
+        itemCode: { type: string }
+        itemName: { type: string }
+        quantity: { type: integer }
+        fromLocationId: { type: integer, nullable: true }
+        fromLocation: { type: string, nullable: true }
+        toLocationId: { type: integer }
+        toLocation: { type: string }
+        movedBy: { type: integer, nullable: true }
+        movedByName: { type: string, nullable: true }
+        movedAt: { type: string, format: date-time }
+        status: { type: string, enum: [in_transit, received, cancelled] }
+        receivedBy: { type: integer, nullable: true }
+        receivedByName: { type: string, nullable: true }
+        receivedAt: { type: string, format: date-time, nullable: true }
+        reason: { type: string, nullable: true }
+
+    # ---- Stock counts ----
+    StockCount:
+      type: object
+      properties:
+        id: { type: integer }
+        locationId: { type: integer }
+        locationName: { type: string }
+        startedBy: { type: integer, nullable: true }
+        startedByName: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time }
+        status: { type: string, enum: [in_progress, completed, cancelled] }
+        completedBy: { type: integer, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+
+    StockCountDetail:
+      type: object
+      properties:
+        id: { type: integer }
+        locationId: { type: integer }
+        locationName: { type: string }
+        startedByName: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time }
+        status: { type: string }
+        expected:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/Item'
+              - type: object
+                properties:
+                  expectedQty: { type: integer }
+                  countedQty: { type: integer }
+                  countedStatus: { type: string, enum: [found, missing, unexpected] }
+                  countedBy: { type: integer, nullable: true }
+                  countedAt: { type: string, format: date-time, nullable: true }
+        extra:
+          type: array
+          description: قطع متاحة فعليًا ولم تكن في القائمة المتوقعة
+          items: { $ref: '#/components/schemas/Item' }
+
+    StockCountReport:
+      type: object
+      properties:
+        id: { type: integer }
+        locationName: { type: string }
+        status: { type: string }
+        startedAt: { type: string, format: date-time }
+        missing:
+          type: array
+          items: { $ref: '#/components/schemas/CountDiffRow' }
+        extra:
+          type: array
+          items: { $ref: '#/components/schemas/CountDiffRow' }
+        totals:
+          type: array
+          items:
+            type: object
+            properties:
+              countedStatus: { type: string, enum: [missing, unexpected] }
+              count: { type: integer }
+              totalValue: { type: number }
+
+    CountDiffRow:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+        metalType: { type: string }
+        carat: { type: string, nullable: true }
+        weightG: { type: number }
+        expectedQty: { type: integer }
+        countedQty: { type: integer }
+        diffQty: { type: integer }
+        pricePerGram: { type: number }
+        metalValue: { type: number }
+
+    # ---- Stock limits ----
+    StockLimit:
+      type: object
+      properties:
+        id: { type: integer }
+        locationId: { type: integer }
+        metalType: { type: string, enum: [gold, silver] }
+        carat: { type: string, nullable: true }
+        minQty: { type: integer }
+        maxQty: { type: integer, nullable: true }
+
+    # ---- Invoices ----
+    Invoice:
+      type: object
+      properties:
+        id: { type: integer }
+        invoiceNo: { type: string, example: INV-20260808-0001 }
+        employeeId: { type: integer }
+        cashierName: { type: string }
+        locationId: { type: integer }
+        locationName: { type: string }
+        customerId: { type: integer, nullable: true }
+        customerName: { type: string, nullable: true }
+        customerPhone: { type: string, nullable: true }
+        metalSubtotal: { type: number }
+        craftsmanshipTotal: { type: number }
+        discountAmount: { type: number }
+        discountReason: { type: string, nullable: true }
+        discountApprovedBy: { type: integer, nullable: true }
+        approvedByName: { type: string, nullable: true }
+        vatPercent: { type: number }
+        vatAmount: { type: number }
+        total: { type: number }
+        paymentMethod: { type: string }
+        paymentMethodName: { type: string }
+        paymentMethodColor: { type: string }
+        status: { type: string, enum: [active, returned] }
+        shiftId: { type: integer, nullable: true }
+        isOffline: { type: boolean }
+        deviceId: { type: string, nullable: true }
+        returnReason: { type: string, nullable: true }
+        returnedAt: { type: string, format: date-time, nullable: true }
+        returnedBy: { type: integer, nullable: true }
+        returnedByName: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    InvoiceCreate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [itemId]
+            properties:
+              itemId: { type: integer }
+              quantity: { type: integer, minimum: 1, default: 1 }
+        locationId: { type: integer, description: افتراضيًا فرع الموظف }
+        customerId: { type: integer }
+        customerPhone: { type: string }
+        paymentMethod: { type: string, default: cash }
+        paidAmount: { type: number, description: افتراضيًا الإجمالي }
+        discountType: { type: string, enum: [percent, fixed], default: percent }
+        discountPercent: { type: number, minimum: 0 }
+        discountValue: { type: number, minimum: 0 }
+        managerPin: { type: string, description: لتجاوز سقف خصم الكاشير }
+        isOffline: { type: boolean, default: false }
+        deviceId: { type: string }
+
+    InvoiceItem:
+      type: object
+      properties:
+        id: { type: integer }
+        invoiceId: { type: integer }
+        itemId: { type: integer }
+        quantity: { type: integer }
+        itemCodeSnapshot: { type: string }
+        itemNameSnapshot: { type: string, nullable: true }
+        metalTypeSnapshot: { type: string }
+        caratSnapshot: { type: string, nullable: true }
+        weightGSnapshot: { type: number }
+        metalPriceSnapshot: { type: number }
+        metalCostPrice: { type: number, nullable: true }
+        craftsmanshipSnapshot: { type: number }
+        lineDiscount: { type: number }
+        costSnapshot: { type: number, nullable: true }
+        lineTotal: { type: number }
+
+    Payment:
+      type: object
+      properties:
+        id: { type: integer }
+        invoiceId: { type: integer }
+        method: { type: string }
+        amount: { type: number }
+        receivedBy: { type: integer, nullable: true }
+        receivedByName: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    # ---- Reservations ----
+    Reservation:
+      type: object
+      properties:
+        id: { type: integer }
+        itemId: { type: integer }
+        itemCode: { type: string }
+        itemName: { type: string }
+        quantity: { type: integer }
+        customerId: { type: integer, nullable: true }
+        customerName: { type: string }
+        customerPhone: { type: string, nullable: true }
+        downPayment: { type: number }
+        totalValue: { type: number }
+        remainingDue: { type: number }
+        reservedBy: { type: integer, nullable: true }
+        reservedByName: { type: string, nullable: true }
+        reservedAt: { type: string, format: date-time }
+        status: { type: string, enum: [active, completed, cancelled] }
+        invoiceId: { type: integer, nullable: true }
+        notes: { type: string, nullable: true }
+
+    ReservationCreate:
+      type: object
+      required: [itemId, downPayment, totalValue]
+      properties:
+        itemId: { type: integer }
+        quantity: { type: integer, minimum: 1, default: 1 }
+        customerId: { type: integer }
+        customerName: { type: string, description: يُستخدم إن لم يُمرَّر customerId }
+        customerPhone: { type: string }
+        downPayment: { type: number, description: العربون }
+        totalValue: { type: number }
+        notes: { type: string }
+
+    # ---- Shifts ----
+    Shift:
+      type: object
+      properties:
+        id: { type: integer }
+        employeeId: { type: integer }
+        employeeName: { type: string }
+        locationId: { type: integer }
+        locationName: { type: string }
+        openedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [open, closed] }
+        closedBy: { type: integer, nullable: true }
+        notes: { type: string, nullable: true }
+        expectedCash: { type: number, nullable: true }
+        countedCash: { type: number, nullable: true }
+        difference: { type: number, nullable: true }
+        reconciledAt: { type: string, format: date-time, nullable: true }
+        expectedTotal: { type: number, nullable: true }
+        countedTotal: { type: number, nullable: true }
+        differenceTotal: { type: number, nullable: true }
+
+    ReconMethod:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+        expected: { type: number }
+        counted: { type: number }
+        difference: { type: number }
+
+    ShiftReconciliation:
+      type: object
+      properties:
+        id: { type: integer }
+        shiftId: { type: integer }
+        openedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, nullable: true }
+        employeeName: { type: string }
+        locationName: { type: string }
+        expectedCash: { type: number }
+        countedCash: { type: number }
+        difference: { type: number }
+        totalDifference: { type: number }
+        methods:
+          type: array
+          items: { $ref: '#/components/schemas/ReconMethod' }
+        reconciledByName: { type: string, nullable: true }
+        reconciledAt: { type: string, format: date-time }
+
+    # ---- Customers ----
+    Customer:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        isActive: { type: boolean }
+        wcCustomerId: { type: integer, nullable: true }
+        wcLastSyncedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        totalInvoices: { type: integer }
+        totalSpent: { type: number }
+        lastPurchaseAt: { type: string, format: date-time, nullable: true }
+        activeReservations: { type: integer }
+
+    CustomerWrite:
+      type: object
+      properties:
+        name: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        address: { type: string }
+        notes: { type: string }
+        isActive: { type: boolean, description: فقط في التعديل }
+
+    # ---- Payment methods ----
+    PaymentMethod:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: cash }
+        nameAr: { type: string }
+        nameEn: { type: string, nullable: true }
+        color: { type: string }
+        isActive: { type: boolean }
+        sortOrder: { type: integer }
+        invoices30d: { type: integer }
+        total30d: { type: number }
+
+    # ---- Dashboard ----
+    DailySales:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        total: { type: number }
+        count: { type: integer }
+
+    ByMetal:
+      type: object
+      properties:
+        metalType: { type: string }
+        count: { type: integer }
+        total: { type: number }
+
+    ByMethod:
+      type: object
+      properties:
+        method: { type: string }
+        count: { type: integer }
+        total: { type: number }
+
+    SalesSummary:
+      type: object
+      properties:
+        todaySales: { type: number }
+        todayInvoices: { type: integer }
+        weekSales: { type: number }
+        monthSales: { type: number }
+
+    InventoryByLocation:
+      type: object
+      properties:
+        locationId: { type: integer }
+        locationName: { type: string }
+        pieceCount: { type: integer }
+        metalValue: { type: number }
+        totalValue: { type: number }
+
+    InventoryBreakdown:
+      type: object
+      properties:
+        locationName: { type: string }
+        metalType: { type: string }
+        carat: { type: string, nullable: true }
+        count: { type: integer }
+        metalValue: { type: number }
+
+    Alert:
+      type: object
+      properties:
+        key:
+          type: string
+          enum: [open_shifts, open_stock_counts, placeholder_weight, no_price_today]
+        severity: { type: string, enum: [warning, high] }
+        count: { type: integer }
+        link: { type: string, description: مسار الواجهة للتنقل }
+        detail:
+          type: array
+          items: { type: object }
+
+    # ---- Sync / WooCommerce ----
+    SyncResult:
+      type: object
+      properties:
+        op: { type: string, example: products.in }
+        direction: { type: string, enum: [in, out] }
+        imported: { type: integer }
+        updated: { type: integer }
+        skipped: { type: integer }
+        failed: { type: integer }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              ref: { type: [string, integer] }
+              reason: { type: string }
+
+    WcConfig:
+      type: object
+      properties:
+        configured: { type: boolean }
+        url: { type: string }
+        hasKey: { type: boolean }
+        hasSecret: { type: boolean }
+        autoSync:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            intervalMin: { type: integer }
+            ops:
+              type: array
+              items: { type: string }
+        weightKg: { type: boolean }
+
+    WcLog:
+      type: object
+      properties:
+        id: { type: integer }
+        op: { type: string }
+        direction: { type: string }
+        imported: { type: integer }
+        updated: { type: integer }
+        skipped: { type: integer }
+        failed: { type: integer }
+        errors:
+          type: array
+          items: { type: object }
+        ranBy: { type: integer, nullable: true }
+        ranByName: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }

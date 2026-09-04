@@ -1,0 +1,18 @@
+{
+  "name": "creative-jewerly",
+  "version": "1.0.0",
+  "private": true,
+  "description": "نظام إدارة محل السبائك والمشغولات الفضية — مخزون، تسعير يومي، فروع متعددة، POS، تقارير",
+  "scripts": {
+    "setup": "sudo bash scripts/setup_db.sh",
+    "db:reset": "bash scripts/reset_db.sh",
+    "seed": "bash scripts/reset_db.sh",
+    "api": "npm run dev --prefix server",
+    "web": "npm run dev --prefix client",
+    "smoke": "bash scripts/smoke_test.sh",
+    "typecheck": "npm run typecheck --prefix server && npm run build --prefix client",
+    "build": "npm run build --prefix server && npm run build --prefix client",
+    "start": "npm run start --prefix server",
+    "deploy:vps": "bash scripts/deploy_vps.sh"
+  }
+}

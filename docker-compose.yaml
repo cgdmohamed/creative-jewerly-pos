@@ -1,0 +1,67 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: pos-runtime
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      - SERVICE_URL_APP_4001
+      - PORT=4001
+      - JWT_SECRET=${SERVICE_REALBASE64_64_JWT:-change-me-in-production}
+      - CORS_ORIGIN=${SERVICE_URL_APP_4001:-http://localhost:4001}
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGUSER=${PGUSER:-jewelry}
+      - PGPASSWORD=${SERVICE_PASSWORD_POSTGRES:-jewelry123}
+      - PGDATABASE=${PGDATABASE:-jewelry}
+      - UPLOAD_DIR=/app/server/uploads
+    expose:
+      - "4001"
+    volumes:
+      - uploads-data:/app/server/uploads
+    restart: unless-stopped
+
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGUSER=${PGUSER:-jewelry}
+      - PGPASSWORD=${SERVICE_PASSWORD_POSTGRES:-jewelry123}
+      - PGDATABASE=${PGDATABASE:-jewelry}
+    volumes:
+      - ./db:/app-db:ro
+    command: >
+      sh -c 'for migration in /app-db/migrations/*.sql; do
+        [ -e "$$migration" ] || continue;
+        echo "Applying $$migration";
+        psql -v ON_ERROR_STOP=1 -f "$$migration";
+      done'
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${PGUSER:-jewelry}
+      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES:-jewelry123}
+      - POSTGRES_DB=${PGDATABASE:-jewelry}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db:/app-db:ro
+      - ./docker/postgres/initdb.sh:/docker-entrypoint-initdb.d/00-initdb.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  uploads-data:

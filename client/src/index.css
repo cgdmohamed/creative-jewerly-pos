@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+:root {
+  --font-sans: "Tajawal", system-ui, -apple-system, sans-serif;
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  @apply text-slate-900 antialiased;
+  background-color: #e4ddcf;
+}
+
+/* Off-canvas drawer is translated off-screen when closed; keep it from
+   widening the scrollable area of the page on small screens. */
+html,
+body {
+  overflow-x: hidden;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d2c9b8 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #d2c9b8;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #bfb4a0;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: #f6d6ae;
+  color: #65300f;
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* backwards (not both): after the animation the element has no transform,
+   so position:fixed descendants (modals) stay viewport-anchored */
+.animate-page {
+  animation: page-in 0.28s ease-out backwards;
+}
+
+@theme {
+  /* Copper-gold brand (jewelry) — deeper 600/700 for WCAG AA on white text */
+  --color-brand-50: #fbf4ea;
+  --color-brand-100: #f7ead8;
+  --color-brand-200: #fedeba;
+  --color-brand-300: #fcc58e;
+  --color-brand-400: #f5a65b;
+  --color-brand-500: #e0832f;
+  --color-brand-600: #bd5510;
+  --color-brand-700: #9e470e;
+  --color-brand-800: #7d3a10;
+  --color-brand-900: #65300f;
+
+  /* Darkened text scale for stronger contrast on light surfaces */
+  --color-slate-400: #64748b;
+  --color-slate-500: #475569;
+  --color-slate-600: #334155;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Library-free printing: only the .print-area element is printed (thermal ~80mm) */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 4mm;
+  }
+  body {
+    background: #fff !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: fixed;
+    inset: 0 auto auto 0;
+    width: 100%;
+    margin: 0;
+    border: none !important;
+    box-shadow: none !important;
+    background: #fff !important;
+  }
+}

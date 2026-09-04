@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/*.log
+**/*.tsbuildinfo
+.git
+.gitignore
+uploads
+server/uploads
+b2b-shop/server/shop.db*
