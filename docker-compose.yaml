@@ -25,7 +25,10 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: pos-migrate
     depends_on:
       postgres:
         condition: service_healthy
@@ -35,14 +38,6 @@ services:
       - PGUSER=${PGUSER:-jewelry}
       - PGPASSWORD=${SERVICE_PASSWORD_POSTGRES:-jewelry123}
       - PGDATABASE=${PGDATABASE:-jewelry}
-    volumes:
-      - ./db:/app-db:ro
-    command: >
-      sh -c 'for migration in /app-db/migrations/*.sql; do
-        [ -e "$$migration" ] || continue;
-        echo "Applying $$migration";
-        psql -v ON_ERROR_STOP=1 -f "$$migration";
-      done'
     restart: "no"
 
   postgres:

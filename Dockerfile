@@ -33,3 +33,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:4001/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "server/dist/index.js"]
+
+FROM postgres:16-alpine AS pos-migrate
+
+COPY db /app-db
+COPY docker/postgres/migrate.sh /usr/local/bin/pos-migrate
+RUN chmod +x /usr/local/bin/pos-migrate
+
+ENTRYPOINT ["/usr/local/bin/pos-migrate"]

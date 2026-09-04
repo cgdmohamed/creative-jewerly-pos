@@ -110,6 +110,8 @@ The database is initialized automatically on first run from:
 2. `db/seed.sql`
 3. `db/migrations/*.sql`
 
+On every deployment, the migration service checks the database first. An empty database receives the schema and initial staff accounts; an existing database receives only idempotent migrations. Redeployment never deletes or recreates the persistent PostgreSQL volume.
+
 ## Coolify Deployment
 
 Use **Docker Compose** deployment in Coolify and point it to `docker-compose.yaml`.
