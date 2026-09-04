@@ -70,15 +70,9 @@ npm run build          # build backend and frontend
 npm start              # run the built backend
 ```
 
-## Default Staff Accounts
+## Initial Staff Accounts
 
-Initial PIN is `1234` for all seeded staff users.
-
-| Username | Role |
-| --- | --- |
-| `manager` | Store manager with full permissions |
-| `cashier` | Cashier with POS permissions |
-| `social` | Social sales user for central stock reservations |
+The installation seed creates only the required manager, cashier, and social staff accounts. No sample products, prices, customers, or transactions are created. Change the initial account credentials immediately after installation.
 
 ## Docker Deployment
 

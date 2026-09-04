@@ -47,7 +47,7 @@ export default function Login() {
               <Input
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="مثال: manager"
+                placeholder="أدخل اسم المستخدم"
                 autoFocus
                 dir="ltr"
                 className="text-center"
@@ -84,9 +84,6 @@ export default function Login() {
             </Button>
           </form>
 
-          <div className="mt-6 rounded-lg bg-slate-50 p-3 text-center text-xs text-slate-500">
-            حسابات تجريبية (كود: 1234) — مدير: manager · كاشير: cashier · سوشيال: social
-          </div>
         </CardContent>
       </Card>
     </div>

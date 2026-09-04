@@ -20,7 +20,7 @@ const ROLE_LABELS: Record<string, string> = { manager: 'مدير', cashier: 'ك�
 
 const EMPTY = {
   employeeNo: '', fullName: '', phone: '', roleId: '', locationId: '',
-  discountCapPercent: '0', username: '', pin: '1234', notes: '',
+  discountCapPercent: '0', username: '', pin: '', notes: '',
 };
 
 export default function Employees() {

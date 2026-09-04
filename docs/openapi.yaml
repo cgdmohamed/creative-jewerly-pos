@@ -18,12 +18,7 @@ info:
     الكود الداخلي في `error` ثابت وقابل للبرمجة عليه.
 
     ## توكن الدخول
-    استخدم `/api/auth/login` بالحسابات الأولية (PIN: `1234`):
-    | username | الدور |
-    |---|---|
-    | `manager` | مدير المحل |
-    | `cashier` | كاشير |
-    | `social` | سوشيال |
+    استخدم `/api/auth/login` ببيانات الحساب التي تم إعدادها عند التثبيت.
   version: 1.0.0
   contact:
     name: Jewelry Store System
@@ -125,8 +120,8 @@ paths:
               type: object
               required: [identifier, pin]
               properties:
-                identifier: { type: string, example: manager }
-                pin: { type: string, example: '1234' }
+                identifier: { type: string }
+                pin: { type: string, format: password }
       responses:
         '200':
           description: نجاح الدخول
