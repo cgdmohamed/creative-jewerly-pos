@@ -529,6 +529,7 @@ async function importOrders(ranBy: number | null, days = 30): Promise<SyncResult
           paymentMethod,
           paidAmount: paid > 0 ? paid : undefined,
           customerId,
+          customerPhone: o.billing?.phone?.trim() || null,
         }, operator!.employee.id, operator!.cashier, false));
 
       await query(`INSERT INTO wc_order_links (wc_order_id, invoice_id) VALUES ($1,$2)`, [o.id, inv.id]);

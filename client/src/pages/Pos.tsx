@@ -253,6 +253,12 @@ export default function Pos() {
         toast.error('إحدى القطع لم تعد متاحة — حدث خطأ في المخزون');
       } else if (String(e.message).includes('prices.missing_today')) {
         toast.error('لا يوجد سعر محدد لليوم لأحد المعادن — لا يمكن البيع');
+      } else if (String(e.message).includes('customers.required')) {
+        setCustomerForm({ name: '', phone: '' });
+        setShowCustomerForm(true);
+        toast.warning('يجب إضافة عميل وربطه بالفاتورة قبل إتمام البيع');
+      } else if (String(e.message).includes('customers.phone_required')) {
+        toast.warning('يجب أن يحتوي العميل على رقم موبايل صالح قبل إتمام البيع');
       } else {
         toast.error('خطأ: ' + e.message);
       }

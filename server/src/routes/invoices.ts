@@ -63,6 +63,13 @@ function validateManagerPin(db: Queryable, pin: string): Promise<boolean> {
 export async function buildInvoice(db: Queryable, b: any, employeeId: number, cashier: any, hasDiscountOverride = false) {
   const items: any[] = b.items;
   if (!Array.isArray(items) || items.length === 0) throw httpError(400, 'missing:items');
+  if (!b.customerId) throw httpError(400, 'customers.required');
+
+  const customer = await db.queryOne<any>(`SELECT * FROM customers WHERE id = $1 AND is_active`, [Number(b.customerId)]);
+  if (!customer) throw httpError(404, 'customers.notfound');
+  const customerPhone = String(customer.phone || b.customerPhone || '').trim();
+  if (customerPhone.replace(/\D/g, '').length < 8) throw httpError(400, 'customers.phone_required');
+  const customerId = customer.id;
 
   const today = todayLocal();
 
@@ -173,16 +180,6 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
   const invoiceNo = `INV-${today.replaceAll('-', '')}-${String(
     (await db.queryOne<any>(`SELECT COUNT(*)::int + 1 AS n FROM invoices WHERE created_at::date = CURRENT_DATE`))?.n ?? 1,
   ).padStart(4, '0')}`;
-
-  // Optional customer link: store the id and snapshot the current phone/name.
-  let customerId: number | null = null;
-  let customerPhone = b.customerPhone || null;
-  if (b.customerId) {
-    const customer = await db.queryOne<any>(`SELECT * FROM customers WHERE id = $1`, [Number(b.customerId)]);
-    if (!customer) throw httpError(404, 'customers.notfound');
-    customerId = customer.id;
-    customerPhone = customer.phone || customerPhone;
-  }
 
   const inv = await db.queryOne<any>(
     `INSERT INTO invoices
