@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Undo2, FileText, Send } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Undo2, FileText, Download, MessageCircle } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select } from '@/components/ui/input';
@@ -16,7 +16,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOfflineStore } from '@/stores/offline';
 import { fmtDateTime, fmtMoney, methodColor, methodName, STATUS_BADGE } from '@/lib/utils';
 import { can } from '@/stores/auth';
-import { copyInvoiceText, shareInvoiceWhatsApp } from '@/lib/invoiceShare';
+import { downloadInvoicePdf, openInvoiceWhatsAppWeb } from '@/lib/invoiceShare';
 import { storeName } from '@/lib/branding';
 
 export default function Invoices() {
@@ -194,12 +194,42 @@ function InvoiceDetail({ id, onClose }: { id: number; onClose: () => void }) {
   const { data: payMethods } = usePaymentMethods();
   const { data: settings } = useSettings();
   const name = storeName(settings);
+  const invoiceRef = useRef<HTMLDivElement>(null);
+  const [pdfAction, setPdfAction] = useState<'download' | 'whatsapp' | null>(null);
 
-  const sendInvoice = () => {
-    if (!inv) return;
-    if (!shareInvoiceWhatsApp(inv, inv.customerPhone, name)) {
-      const ok = copyInvoiceText(inv, name);
-      toast[ok ? 'info' : 'error'](ok ? 'نسخنا نص الفاتورة — ألصقه للعميل' : 'لا يوجد رقم موبايل للعميل');
+  const downloadPdf = async () => {
+    if (!inv || !invoiceRef.current) return;
+    setPdfAction('download');
+    try {
+      const filename = await downloadInvoicePdf(invoiceRef.current, inv);
+      toast.success(`تم تنزيل ${filename}`);
+    } catch {
+      toast.error('تعذر إنشاء ملف PDF للفاتورة');
+    } finally {
+      setPdfAction(null);
+    }
+  };
+
+  const sendInvoice = async () => {
+    if (!inv || !invoiceRef.current) return;
+    if (String(inv.customerPhone ?? '').replace(/\D/g, '').length < 8) {
+      toast.error('لا يمكن الإرسال: لا يوجد رقم موبايل صالح للعميل');
+      return;
+    }
+
+    const opened = openInvoiceWhatsAppWeb(inv, inv.customerPhone, name);
+    setPdfAction('whatsapp');
+    try {
+      const filename = await downloadInvoicePdf(invoiceRef.current, inv);
+      toast[opened ? 'success' : 'warning'](
+        opened
+          ? `تم تنزيل ${filename} وفتح محادثة العميل — أرفق الملف من التنزيلات`
+          : `تم تنزيل ${filename} — اسمح بالنوافذ المنبثقة ثم افتح واتساب مجدداً`,
+      );
+    } catch {
+      toast.error('تعذر إنشاء ملف PDF للفاتورة');
+    } finally {
+      setPdfAction(null);
     }
   };
 
@@ -207,71 +237,82 @@ function InvoiceDetail({ id, onClose }: { id: number; onClose: () => void }) {
     <Dialog open onClose={onClose} title={`تفاصيل الفاتورة ${inv?.invoiceNo ?? ''}`} className="max-w-2xl">
       {inv && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div><span className="text-slate-500">التاريخ: </span>{fmtDateTime(inv.createdAt)}</div>
-            <div><span className="text-slate-500">الكاشير: </span>{inv.cashierName}</div>
-            <div><span className="text-slate-500">الفرع: </span>{inv.locationName}</div>
-            <div>
-              <span className="text-slate-500">طريقة الدفع: </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: methodColor(inv.paymentMethod, payMethods) }} />
-                {methodName(inv.paymentMethod, payMethods)}
-              </span>
+          <div ref={invoiceRef} className="mx-auto w-full max-w-md rounded-lg border border-slate-200 bg-white p-5">
+            <div className="mb-4 text-center">
+              <div className="text-lg font-extrabold text-slate-900">{name}</div>
+              <div className="font-mono text-xs font-bold text-slate-600">{inv.invoiceNo}</div>
             </div>
-            {inv.customerName && (
-              <div className="col-span-2">
-                <span className="text-slate-500">العميل: </span>
-                {inv.customerName}
-                {inv.customerPhone && <span className="ms-2" dir="ltr">{inv.customerPhone}</span>}
-                <Button variant="outline" size="sm" className="ms-3" onClick={sendInvoice} title="إرسال الفاتورة للعميل">
-                  <Send className="h-3.5 w-3.5" /> إرسال
-                </Button>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div><span className="text-slate-500">التاريخ: </span>{fmtDateTime(inv.createdAt)}</div>
+              <div><span className="text-slate-500">الكاشير: </span>{inv.cashierName}</div>
+              <div><span className="text-slate-500">الفرع: </span>{inv.locationName}</div>
+              <div>
+                <span className="text-slate-500">طريقة الدفع: </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: methodColor(inv.paymentMethod, payMethods) }} />
+                  {methodName(inv.paymentMethod, payMethods)}
+                </span>
               </div>
-            )}
-          </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>القطعة</TableHead>
-                <TableHead>الوزن</TableHead>
-                <TableHead>سعر المعدن</TableHead>
-                <TableHead>المصنعية</TableHead>
-                <TableHead>الإجمالي</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(inv.items ?? []).map((it) => (
-                <TableRow key={it.id}>
-                  <TableCell>
-                    <div className="font-mono text-xs font-bold">{it.itemCodeSnapshot}</div>
-                    {it.itemNameSnapshot && <div className="text-xs text-slate-400">{it.itemNameSnapshot}</div>}
-                  </TableCell>
-                  <TableCell className="text-xs">{it.weightGSnapshot} جم</TableCell>
-                  <TableCell className="text-xs">{fmtMoney(it.metalPriceSnapshot)}</TableCell>
-                  <TableCell className="text-xs">{fmtMoney(it.craftsmanshipSnapshot)}</TableCell>
-                  <TableCell>{fmtMoney(it.lineTotal)}</TableCell>
+              {inv.customerName && (
+                <div className="col-span-2">
+                  <span className="text-slate-500">العميل: </span>
+                  {inv.customerName}
+                  {inv.customerPhone && <span className="ms-2" dir="ltr">{inv.customerPhone}</span>}
+                </div>
+              )}
+            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="px-2 py-2">القطعة</TableHead>
+                  <TableHead className="px-2 py-2">الوزن</TableHead>
+                  <TableHead className="px-2 py-2">سعر المعدن</TableHead>
+                  <TableHead className="px-2 py-2">المصنعية</TableHead>
+                  <TableHead className="px-2 py-2">الإجمالي</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          <div className="space-y-1 text-sm">
-            <div className="flex justify-between"><span className="text-slate-500">قيمة المعدن</span><span>{fmtMoney(inv.metalSubtotal)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">المصنعية</span><span>{fmtMoney(inv.craftsmanshipTotal)}</span></div>
-            {Number(inv.discountAmount) > 0 && (
-              <div className="flex justify-between text-rose-600">
-                <span>الخصم {inv.discountReason ? `(${inv.discountReason})` : ''}</span>
-                <span>-{fmtMoney(inv.discountAmount)}</span>
+              </TableHeader>
+              <TableBody>
+                {(inv.items ?? []).map((it) => (
+                  <TableRow key={it.id}>
+                    <TableCell className="px-2 py-2">
+                      <div className="font-mono text-xs font-bold">{it.itemCodeSnapshot}</div>
+                      {it.itemNameSnapshot && <div className="text-xs text-slate-400">{it.itemNameSnapshot}</div>}
+                    </TableCell>
+                    <TableCell className="px-2 py-2 text-xs">{it.weightGSnapshot} جم</TableCell>
+                    <TableCell className="px-2 py-2 text-xs">{fmtMoney(it.metalPriceSnapshot)}</TableCell>
+                    <TableCell className="px-2 py-2 text-xs">{fmtMoney(it.craftsmanshipSnapshot)}</TableCell>
+                    <TableCell className="px-2 py-2">{fmtMoney(it.lineTotal)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className="mt-4 space-y-1 text-sm">
+              <div className="flex justify-between"><span className="text-slate-500">قيمة المعدن</span><span>{fmtMoney(inv.metalSubtotal)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">المصنعية</span><span>{fmtMoney(inv.craftsmanshipTotal)}</span></div>
+              {Number(inv.discountAmount) > 0 && (
+                <div className="flex justify-between text-rose-600">
+                  <span>الخصم {inv.discountReason ? `(${inv.discountReason})` : ''}</span>
+                  <span>-{fmtMoney(inv.discountAmount)}</span>
+                </div>
+              )}
+              {Number(inv.vatAmount) > 0 && (
+                <div className="flex justify-between">
+                  <span>ضريبة القيمة المضافة ({Number(inv.vatPercent)}%)</span>
+                  <span>{fmtMoney(inv.vatAmount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-slate-200 pt-2 font-bold">
+                <span>الإجمالي</span><span className="whitespace-nowrap">{fmtMoney(inv.total)} ج.م</span>
               </div>
-            )}
-            {Number(inv.vatAmount) > 0 && (
-              <div className="flex justify-between">
-                <span>ضريبة القيمة المضافة ({Number(inv.vatPercent)}%)</span>
-                <span>{fmtMoney(inv.vatAmount)}</span>
-              </div>
-            )}
-            <div className="flex justify-between border-t border-slate-200 pt-2 font-bold">
-              <span>الإجمالي</span><span>{fmtMoney(inv.total)} ج.م</span>
             </div>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" disabled={pdfAction != null} onClick={downloadPdf}>
+              <Download className="h-4 w-4" /> {pdfAction === 'download' ? 'جاري التجهيز...' : 'تحميل PDF'}
+            </Button>
+            <Button variant="outline" disabled={pdfAction != null} onClick={sendInvoice}>
+              <MessageCircle className="h-4 w-4" /> {pdfAction === 'whatsapp' ? 'جاري التجهيز...' : 'واتساب'}
+            </Button>
           </div>
         </div>
       )}
