@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import type { AppSettings, Item } from './types';
 
 export type LabelTemplateId =
+  | 'basic'
   | 'classic'
   | 'modern'
   | 'arabic-focus'
@@ -28,6 +29,7 @@ export interface LabelOptions {
 }
 
 export const LABEL_TEMPLATES: LabelTemplate[] = [
+  { id: 'basic', name: 'الأساسي (افتراضي)', codeType: 'qr' },
   { id: 'classic', name: '1. كلاسيكي', codeType: 'barcode' },
   { id: 'modern', name: '2. عصري', codeType: 'qr' },
   { id: 'arabic-focus', name: '3. عربي', codeType: 'barcode' },
@@ -63,7 +65,7 @@ export function labelCodeForItem(item: Pick<Item, 'id' | 'labelCode'>): string {
 export function labelOptionsFromSettings(settings?: AppSettings): LabelOptions {
   const rawTemplate = settings?.label_template as LabelTemplateId | undefined;
   return {
-    template: rawTemplate && TEMPLATE_IDS.has(rawTemplate) ? rawTemplate : 'clean-bold',
+    template: rawTemplate && TEMPLATE_IDS.has(rawTemplate) ? rawTemplate : 'basic',
     logoUrl: settings?.label_logo_enabled === 'false'
       ? null
       : settings?.label_logo_data_url || DEFAULT_LOGO,
@@ -181,6 +183,8 @@ function leftTemplate(template: LabelTemplateId, options: LabelOptions): string 
   const brand = splitBrand(options.brandName);
   const mark = logo(options.logoUrl, 7, 9, 58, 86);
   switch (template) {
+    case 'basic':
+      return '';
     case 'classic':
       return logo(options.logoUrl, 65, 8, 58, 86) || text(options.brandName, 100, 57, 17, { bold: true });
     case 'modern':
@@ -201,9 +205,25 @@ function leftTemplate(template: LabelTemplateId, options: LabelOptions): string 
 }
 
 export async function buildLabelSvg(item: Item, options: LabelOptions): Promise<string> {
-  const template = LABEL_TEMPLATES.find((entry) => entry.id === options.template) ?? LABEL_TEMPLATES[7];
+  const template = LABEL_TEMPLATES.find((entry) => entry.id === options.template) ?? LABEL_TEMPLATES[0];
   const labelCode = labelCodeForItem(item);
   const image = await codeImage(template.codeType, labelCode);
+  if (options.template === 'basic') {
+    const brand = shortText(options.brandName, 18);
+    const details = [metalLine(item), weightLine(item)].filter(Boolean).join('  |  ');
+    const dx = options.offsetX * 8;
+    const dy = options.offsetY * 8;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="70mm" height="13mm" viewBox="0 0 560 104" role="img" aria-label="${xml(`ملصق ${item.code}`)}">
+      <rect width="560" height="104" fill="#fff"/>
+      <g transform="translate(${dx} ${dy})" fill="#000">
+        <image href="${image}" x="56" y="1" width="87" height="87"/>
+        ${text(labelCode, 100, 101, 10)}
+        ${text(brand, 460, 25, brand.length > 14 ? 15 : 18, { bold: true })}
+        ${text(compactCode(item), 460, 56, compactCode(item).length > 10 ? 13 : 15)}
+        ${text(details, 460, 86, details.length > 16 ? 13 : 16, { bold: true })}
+      </g>
+    </svg>`;
+  }
   const codeGraphic = template.codeType === 'qr'
     ? `<image href="${image}" x="469" y="8" width="87" height="87"/>`
     : `<image href="${image}" x="442" y="10" width="116" height="58" preserveAspectRatio="none"/>${text(labelCode, 500, 89, 10)}`;

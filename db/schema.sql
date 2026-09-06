@@ -468,7 +468,7 @@ INSERT INTO app_settings (key, value) VALUES
   ('cashier_discount_enabled','true'),
   ('cashier_cap_override_enabled','true'),
   ('vat_percent','0'),
-  ('label_template','clean-bold'),
+  ('label_template','basic'),
   ('label_logo_enabled','true'),
   ('label_brand_name','GOLDEN CROWN'),
   ('label_printer_name','LV-1300'),

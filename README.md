@@ -106,7 +106,7 @@ Persistent volumes:
 
 ## Jewelry Label Printing
 
-The POS includes eight product-label templates for 70 x 13 mm dumbbell jewelry labels. Managers can choose the default template, upload a monochrome logo, set the brand and preferred printer names, preview the result, and calibrate horizontal or vertical offsets from **Settings > Product Label Printer**.
+The POS includes a default QR template plus eight client presentation templates for 70 x 13 mm dumbbell jewelry labels. Managers can choose the default template, upload a monochrome logo, set the brand and preferred printer names, preview the result, and calibrate horizontal or vertical offsets from **Settings > Product Label Printer**.
 
 Labels can be printed individually or in batches from the inventory page. Each item receives a stable numeric internal label code, rendered as QR or Code 128 according to the selected template. Scanning that code in the POS search field adds the matching available item to the cart.
 

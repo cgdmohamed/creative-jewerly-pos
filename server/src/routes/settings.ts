@@ -27,7 +27,7 @@ const SETTINGS: Record<string, SettingRule> = {
   vat_percent: { type: 'number', min: 0, max: 100 },
   label_template: {
     type: 'enum',
-    values: ['classic', 'modern', 'arabic-focus', 'slogan', 'metal-first', 'simple-arabic', 'premium-text', 'clean-bold'],
+    values: ['basic', 'classic', 'modern', 'arabic-focus', 'slogan', 'metal-first', 'simple-arabic', 'premium-text', 'clean-bold'],
   },
   label_logo_data_url: { type: 'logo' },
   label_logo_enabled: { type: 'bool' },
