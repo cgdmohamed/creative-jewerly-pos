@@ -20,6 +20,7 @@ import PaymentMethods from '@/pages/PaymentMethods';
 import Settings from '@/pages/Settings';
 import Customers from '@/pages/Customers';
 import WooCommerce from '@/pages/WooCommerce';
+import Wholesale from '@/pages/Wholesale';
 import { usePublicSettings } from '@/hooks/useData';
 import { storeName } from '@/lib/branding';
 
@@ -73,6 +74,7 @@ export default function App() {
             <Route path="/payment-methods" element={<PaymentMethods />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/woocommerce" element={<WooCommerce />} />
+            <Route path="/wholesale" element={<Wholesale />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

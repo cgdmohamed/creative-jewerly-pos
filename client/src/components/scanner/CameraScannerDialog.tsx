@@ -5,11 +5,12 @@ import { Dialog } from '@/components/ui/dialog';
 interface CameraScannerDialogProps {
   onClose: () => void;
   onScan: (value: string) => void;
+  continuous?: boolean;
 }
 
-export function CameraScannerDialog({ onClose, onScan }: CameraScannerDialogProps) {
+export function CameraScannerDialog({ onClose, onScan, continuous = false }: CameraScannerDialogProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const scannedRef = useRef(false);
+  const lastScanRef = useRef({ value: '', at: 0 });
   const onScanRef = useRef(onScan);
   const [error, setError] = useState('');
   const [starting, setStarting] = useState(true);
@@ -68,10 +69,13 @@ export function CameraScannerDialog({ onClose, onScan }: CameraScannerDialogProp
           },
           videoRef.current,
           (result) => {
-            if (!result || scannedRef.current || disposed) return;
-            scannedRef.current = true;
-            stopScanner?.();
-            onScanRef.current(result.getText());
+            if (!result || disposed) return;
+            const value = result.getText();
+            const now = Date.now();
+            if (lastScanRef.current.value === value && now-lastScanRef.current.at < 900) return;
+            lastScanRef.current = { value, at: now };
+            if (!continuous) stopScanner?.();
+            onScanRef.current(value);
           },
         );
         stopScanner = () => controls.stop();
@@ -94,7 +98,7 @@ export function CameraScannerDialog({ onClose, onScan }: CameraScannerDialogProp
       disposed = true;
       stopVideo();
     };
-  }, []);
+  }, [continuous]);
 
   return (
     <Dialog open onClose={onClose} title="قراءة QR أو الباركود" className="max-w-lg">
@@ -115,7 +119,7 @@ export function CameraScannerDialog({ onClose, onScan }: CameraScannerDialogProp
           </div>
         )}
       </div>
-      {!error && <p className="mt-3 text-center text-sm text-slate-500">وجّه الكاميرا نحو الرمز داخل الإطار</p>}
+      {!error && <p className="mt-3 text-center text-sm text-slate-500">{continuous ? 'مسح متواصل: أبعد الرمز بعد سماع التنبيه ثم امسح القطعة التالية' : 'وجّه الكاميرا نحو الرمز داخل الإطار'}</p>}
     </Dialog>
   );
 }

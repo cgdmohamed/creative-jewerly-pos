@@ -1,7 +1,7 @@
 import { Request } from 'express';
 import type { Queryable } from './db.js';
 
-/** Insert a generic audit-log row. Never throws. */
+/** Insert a generic audit-log row as part of the surrounding business operation. */
 export async function audit(
   db: Queryable,
   table: string,
@@ -11,15 +11,14 @@ export async function audit(
   oldData?: any,
   newData?: any,
 ) {
-  try {
-    await db.query(
-      `INSERT INTO audit_log (table_name, record_id, action, old_data, new_data, performed_by)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [table, String(recordId), action, oldData ?? null, newData ?? null, performedBy ?? null],
-    );
-  } catch {
-    /* audit must never break a business operation */
-  }
+  await db.query(
+    `INSERT INTO audit_log (table_name, record_id, action, old_data, new_data, performed_by)
+     VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6)`,
+    [table, String(recordId), action,
+     oldData == null ? null : JSON.stringify(oldData),
+     newData == null ? null : JSON.stringify(newData),
+     performedBy ?? null],
+  );
 }
 
 /** Format a JSON-ish snake_case row into camelCase for the API (recursive). */

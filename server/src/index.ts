@@ -23,6 +23,7 @@ import { settingsRouter } from './routes/settings.js';
 import { customersRouter } from './routes/customers.js';
 import { alertsRouter } from './routes/alerts.js';
 import { woocommerceRouter, runAutoSync } from './routes/woocommerce.js';
+import { wholesaleRouter } from './routes/wholesale.js';
 
 const app = express();
 // Cloudflare forwards to Coolify's reverse proxy before reaching the app.
@@ -71,6 +72,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/customers', customersRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/woocommerce', woocommerceRouter);
+app.use('/api/wholesale', wholesaleRouter);
 
 app.use('/api', authenticate, (req, res) => {
   res.status(404).json({ error: `route.notfound:${req.method} ${req.path}` });

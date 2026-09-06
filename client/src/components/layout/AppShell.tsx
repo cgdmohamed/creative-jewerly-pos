@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   LayoutDashboard, ShoppingCart, Package, Coins, MapPin, ArrowLeftRight,
-  ClipboardList, FileText, HandCoins, Clock3, BarChart3, Users, LogOut, Gem, Wallet, Settings, Menu, X, BookUser, ShoppingBag,
+  ClipboardList, FileText, HandCoins, Clock3, BarChart3, Users, LogOut, Gem, Wallet, Settings, Menu, X, BookUser, ShoppingBag, Scale,
 } from 'lucide-react';
 import { useAuth } from '@/stores/auth';
 import { useOfflineStore } from '@/stores/offline';
@@ -37,6 +37,7 @@ const ICONS = {
   paymentMethods: Wallet,
   settings: Settings,
   woocommerce: ShoppingBag,
+  wholesale: Scale,
 } as const;
 
 const PATHS: Record<string, string> = {
@@ -56,6 +57,7 @@ const PATHS: Record<string, string> = {
   paymentMethods: '/payment-methods',
   settings: '/settings',
   woocommerce: '/woocommerce',
+  wholesale: '/wholesale',
 };
 
 const MENU: { group: string; items: { key: keyof typeof ICONS; permission?: string }[] }[] = [
@@ -76,6 +78,7 @@ const MENU: { group: string; items: { key: keyof typeof ICONS; permission?: stri
       { key: 'stockCounts', permission: 'stockcount.manage' },
       { key: 'invoices' },
       { key: 'reservations', permission: 'reservation.manage' },
+      { key: 'wholesale', permission: 'wholesale.manage' },
       { key: 'shifts' },
     ],
   },
@@ -296,6 +299,7 @@ const LABELS: Record<string, string> = {
   paymentMethods: 'طرق الدفع',
   settings: 'الإعدادات',
   woocommerce: 'المتجر الإلكتروني',
+  wholesale: 'تجار الجملة',
 };
 
 function label(k: string) {
