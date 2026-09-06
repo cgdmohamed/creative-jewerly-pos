@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ScanLine, Trash2, Plus, Minus, Printer, X, WifiOff, Gem, CloudUpload, RotateCcw, MessageCircle, UserPlus, ShoppingCart, HandCoins, Calculator } from 'lucide-react';
+import { ScanLine, Trash2, Plus, Minus, Printer, X, WifiOff, Gem, CloudUpload, RotateCcw, MessageCircle, UserPlus, ShoppingCart, HandCoins, Calculator, Camera } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select } from '@/components/ui/input';
@@ -17,6 +17,7 @@ import { downloadInvoicePdf, openInvoiceWhatsAppWeb } from '@/lib/invoiceShare';
 import type { CartLine, Item } from '@/lib/types';
 import { storeName } from '@/lib/branding';
 import { labelCodeForItem } from '@/lib/labels';
+import { CameraScannerDialog } from '@/components/scanner/CameraScannerDialog';
 
 const hasUsablePhone = (phone?: string | null) => String(phone ?? '').replace(/\D/g, '').length >= 8;
 
@@ -47,6 +48,7 @@ export default function Pos() {
   const [customerId, setCustomerId] = useState<number | ''>('');
   const [showCustomerForm, setShowCustomerForm] = useState(false);
   const [customerForm, setCustomerForm] = useState({ name: '', phone: '' });
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
 
   const isDiscountOverride = employee?.permissions.includes('invoice.discount_override');
   const cashierDiscountEnabled = settings?.cashier_discount_enabled !== 'false';
@@ -107,6 +109,29 @@ export default function Pos() {
         (it.name || '').toLowerCase().includes(val.toLowerCase())),
     );
     setResults(matches);
+  };
+
+  const findScannedItem = (raw: string) => {
+    const scanned = raw.trim().toLowerCase();
+    return (allItems ?? []).find((item) =>
+      item.status === 'available' && (
+        labelCodeForItem(item) === scanned ||
+        item.code.toLowerCase() === scanned ||
+        (item.barcode || '').toLowerCase() === scanned
+      ),
+    );
+  };
+
+  const acceptScannedCode = (raw: string) => {
+    const value = raw.trim();
+    const item = findScannedItem(value);
+    setQuery(value);
+    if (item) {
+      if (addToCart(item)) toast.success(`تمت قراءة ${item.code}`);
+      return;
+    }
+    doSearch(value);
+    toast.warning('لم يتم العثور على منتج مطابق للرمز');
   };
 
   const addToCart = (item: Item): boolean => {
@@ -362,39 +387,53 @@ export default function Pos() {
         </Dialog>
       )}
 
+      {showCameraScanner && (
+        <CameraScannerDialog
+          onClose={() => setShowCameraScanner(false)}
+          onScan={(value) => {
+            setShowCameraScanner(false);
+            acceptScannedCode(value);
+          }}
+        />
+      )}
+
       <div className="grid gap-6 lg:grid-cols-5">
         {/* Search panel */}
         <div className="lg:col-span-3 space-y-4">
           <Card>
             <CardContent className="p-4">
-              <div className="relative">
-                <ScanLine className="absolute right-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
-                <Input
-                  ref={searchRef}
-                  value={query}
-                  onChange={(e) => { setQuery(e.target.value); doSearch(e.target.value); }}
-                  onKeyDown={(e) => {
-                    if (e.key !== 'Enter') return;
-                    const scanned = e.currentTarget.value.trim().toLowerCase();
-                    const exact = (allItems ?? []).find((item) =>
-                      item.status === 'available' && (
-                        labelCodeForItem(item) === scanned ||
-                        item.code.toLowerCase() === scanned ||
-                        (item.barcode || '').toLowerCase() === scanned
-                      ),
-                    );
-                    const item = exact ?? (results.length === 1 ? results[0] : null);
-                    if (item) {
-                      e.preventDefault();
-                      if (addToCart(item)) toast.success(`تمت قراءة ${item.code}`);
-                    } else {
-                      toast.warning('لم يتم العثور على منتج مطابق للرمز');
-                    }
-                  }}
-                  placeholder="امسح QR / الباركود أو اكتب الكود والاسم…"
-                  className="h-12 pr-10 text-base"
-                  autoFocus
-                />
+              <div className="flex gap-2">
+                <div className="relative min-w-0 flex-1">
+                  <ScanLine className="absolute right-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    ref={searchRef}
+                    value={query}
+                    onChange={(e) => { setQuery(e.target.value); doSearch(e.target.value); }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      const exact = findScannedItem(e.currentTarget.value);
+                      const item = exact ?? (results.length === 1 ? results[0] : null);
+                      if (item) {
+                        e.preventDefault();
+                        if (addToCart(item)) toast.success(`تمت قراءة ${item.code}`);
+                      } else {
+                        toast.warning('لم يتم العثور على منتج مطابق للرمز');
+                      }
+                    }}
+                    placeholder="امسح QR / الباركود أو اكتب الكود والاسم…"
+                    className="h-12 pr-10 text-base"
+                    autoFocus
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  className="h-12 shrink-0 px-3"
+                  onClick={() => setShowCameraScanner(true)}
+                  title="قراءة QR أو الباركود بالكاميرا"
+                >
+                  <Camera className="h-5 w-5" />
+                  <span className="hidden sm:inline">الكاميرا</span>
+                </Button>
               </div>
 
               {results.length > 0 && (
