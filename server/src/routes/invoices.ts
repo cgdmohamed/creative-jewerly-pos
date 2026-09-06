@@ -270,7 +270,15 @@ invoicesRouter.post('/', requirePermission('invoice.create'), async (req, res) =
         req.employee!.permissions.includes('invoice.discount_override')));
     await audit(poolAsQueryable(), 'invoices', inv.id, 'create', req.employee!.id, null, req.body);
     const full = await queryOne<any>(`${INVOICE_SELECT} WHERE inv.id = $1`, [inv.id]);
-    res.status(201).json(camelize(full));
+    const [items, payments] = await Promise.all([
+      query(`SELECT ii.* FROM invoice_items ii WHERE ii.invoice_id = $1 ORDER BY ii.id`, [inv.id]),
+      query(
+        `SELECT p.*, e.full_name AS received_by_name FROM payments p
+           LEFT JOIN employees e ON e.id = p.received_by WHERE p.invoice_id = $1`,
+        [inv.id],
+      ),
+    ]);
+    res.status(201).json({ ...camelize(full), items: camelizeRows(items), payments: camelizeRows(payments) });
   } catch (e: any) {
     res.status(e.status || 500).json({ error: e.message || 'error' });
   }

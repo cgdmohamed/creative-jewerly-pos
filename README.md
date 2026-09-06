@@ -110,6 +110,10 @@ The POS includes a default QR template plus eight client presentation templates 
 
 Labels can be printed individually or in batches from the inventory page. Each item receives a stable numeric internal label code, rendered as QR or Code 128 according to the selected template. Scanning that code in the POS search field adds the matching available item to the cart.
 
+## WhatsApp Web Invoice PDF
+
+POS sales require a customer with a mobile number. After checkout, the WhatsApp button creates and downloads an 80 mm PDF receipt, then opens the customer's conversation in an already authenticated WhatsApp Web session with the invoice summary prefilled. Browser cross-origin protections do not allow the POS to attach a local file inside WhatsApp Web automatically, so the cashier selects the downloaded PDF from WhatsApp's attachment control before sending.
+
 Recommended workstation setup:
 
 - Connect the `LV-1300` printer and a 2D USB HID scanner to the cashier workstation.

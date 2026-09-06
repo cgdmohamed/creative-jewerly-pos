@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ScanLine, Trash2, Plus, Minus, Printer, X, WifiOff, Gem, CloudUpload, RotateCcw, Send, UserPlus, ShoppingCart, HandCoins, Calculator } from 'lucide-react';
+import { ScanLine, Trash2, Plus, Minus, Printer, X, WifiOff, Gem, CloudUpload, RotateCcw, MessageCircle, UserPlus, ShoppingCart, HandCoins, Calculator } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select } from '@/components/ui/input';
@@ -13,10 +13,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/stores/auth';
 import { useOfflineStore } from '@/stores/offline';
 import { fmtMoney, fmtNum, metalLabel, fmtDateTime, cn } from '@/lib/utils';
-import { copyInvoiceText, shareInvoiceWhatsApp } from '@/lib/invoiceShare';
+import { downloadInvoicePdf, openInvoiceWhatsAppWeb } from '@/lib/invoiceShare';
 import type { CartLine, Item } from '@/lib/types';
 import { storeName } from '@/lib/branding';
 import { labelCodeForItem } from '@/lib/labels';
+
+const hasUsablePhone = (phone?: string | null) => String(phone ?? '').replace(/\D/g, '').length >= 8;
 
 export default function Pos() {
   const { employee } = useAuth();
@@ -195,6 +197,18 @@ export default function Pos() {
   const capBlocked = exceedCap && !capOverrideEnabled;
 
   const checkout = async () => {
+    const selectedCustomer = (customers ?? []).find((customer) => customer.id === customerId);
+    if (!customerId) {
+      setCustomerForm({ name: '', phone: '' });
+      setShowCustomerForm(true);
+      toast.warning('يجب إضافة عميل ورقم موبايل قبل إتمام البيع');
+      return;
+    }
+    if (!hasUsablePhone(selectedCustomer?.phone)) {
+      toast.warning('العميل المختار لا يحتوي على رقم موبايل — حدّث بياناته أو اختر عميلاً آخر');
+      return;
+    }
+
     const payload = {
       items: cart.map((l) => ({ itemId: l.item.id, quantity: l.quantity })),
       discountType,
@@ -219,6 +233,7 @@ export default function Pos() {
       setManagerPin('');
       setNeedApproval(false);
       setPaidAmount('');
+      setCustomerId('');
       qc.invalidateQueries({ queryKey: ['items'] });
       qc.invalidateQueries({ queryKey: ['dashboard-data'] });
       qc.invalidateQueries({ queryKey: ['invoices'] });
@@ -289,7 +304,7 @@ export default function Pos() {
         <Dialog open onClose={() => setShowCustomerForm(false)} title="إضافة عميل جديد" className="max-w-sm">
           <div className="space-y-3">
             <div>
-              <Label>اسم العميل</Label>
+              <Label>اسم العميل *</Label>
               <Input
                 value={customerForm.name}
                 onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
@@ -297,7 +312,7 @@ export default function Pos() {
               />
             </div>
             <div>
-              <Label>رقم الموبايل (للإرسال)</Label>
+              <Label>رقم الموبايل (مطلوب للإرسال) *</Label>
               <Input
                 value={customerForm.phone}
                 onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
@@ -310,7 +325,7 @@ export default function Pos() {
             <Button variant="outline" onClick={() => setShowCustomerForm(false)}>إلغاء</Button>
             <Button
               variant="brand"
-              disabled={!customerForm.name.trim() && !customerForm.phone.trim()}
+              disabled={!customerForm.name.trim() || !hasUsablePhone(customerForm.phone)}
               onClick={async () => {
                 if (!navigator.onLine) {
                   toast.error('إضافة عميل جديد تحتاج اتصالاً بالإنترنت');
@@ -321,10 +336,14 @@ export default function Pos() {
                     method: 'POST',
                     body: { name: customerForm.name, phone: customerForm.phone || null },
                   });
+                  qc.setQueryData<any[]>(['customers', ''], (current = []) => [
+                    created,
+                    ...current.filter((customer) => customer.id !== created.id),
+                  ]);
                   setCustomerId(created.id);
                   setCustomerForm({ name: '', phone: '' });
                   setShowCustomerForm(false);
-                  qc.invalidateQueries({ queryKey: ['customers'] });
+                  void qc.invalidateQueries({ queryKey: ['customers'] });
                   toast.success('تم تسجيل العميل وربطه بالفاتورة');
                 } catch (e: any) {
                   toast.error('خطأ: ' + e.message);
@@ -681,12 +700,13 @@ export default function Pos() {
 
                 <div className="space-y-3">
                   <div>
-                    <Label>العميل</Label>
+                    <Label>العميل (مطلوب)</Label>
                     <div className="flex gap-2">
                       <Select
                         value={customerId}
                         onChange={(e) => {
                           if (e.target.value === '__new__') {
+                            setCustomerForm({ name: '', phone: '' });
                             setShowCustomerForm(true);
                           } else {
                             setCustomerId(e.target.value ? Number(e.target.value) : '');
@@ -694,7 +714,7 @@ export default function Pos() {
                         }}
                         className="flex-1"
                       >
-                        <option value="">نقدي (بدون)</option>
+                        <option value="">اختر العميل</option>
                         {(customers ?? []).map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name}{c.phone ? ` — ${c.phone}` : ''}
@@ -703,7 +723,10 @@ export default function Pos() {
                       </Select>
                       <Button
                         variant="outline"
-                        onClick={() => setShowCustomerForm(true)}
+                        onClick={() => {
+                          setCustomerForm({ name: '', phone: '' });
+                          setShowCustomerForm(true);
+                        }}
                         title="إضافة عميل جديد"
                       >
                         <UserPlus className="h-4 w-4" /> عميل جديد
@@ -827,6 +850,30 @@ export default function Pos() {
 function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName: string; onClose: () => void }) {
   const { employee } = useAuth();
   const printRef = useRef<HTMLDivElement>(null);
+  const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+
+  const sendPdfToWhatsApp = async () => {
+    if (!invoice.customerId || !hasUsablePhone(invoice.customerPhone)) {
+      toast.error('لا يمكن الإرسال: الفاتورة غير مرتبطة بعميل لديه رقم موبايل');
+      return;
+    }
+    if (!printRef.current) return;
+
+    const opened = openInvoiceWhatsAppWeb(invoice, invoice.customerPhone, storeName);
+    setSendingWhatsApp(true);
+    try {
+      const filename = await downloadInvoicePdf(printRef.current, invoice);
+      toast[opened ? 'success' : 'warning'](
+        opened
+          ? `تم تنزيل ${filename} وفتح محادثة العميل — أرفق الملف من التنزيلات`
+          : `تم تنزيل ${filename} — اسمح بالنوافذ المنبثقة ثم افتح واتساب مجدداً`,
+      );
+    } catch {
+      toast.error('تعذر إنشاء ملف PDF للفاتورة');
+    } finally {
+      setSendingWhatsApp(false);
+    }
+  };
 
   return (
     <Dialog open onClose={onClose} title="تم البيع بنجاح" className="max-w-md">
@@ -837,7 +884,7 @@ function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName
         </div>
         <div className="mb-3 flex justify-between border-b border-dashed pb-2">
           <span className="font-mono font-bold">{invoice.invoiceNo}</span>
-          <span className="text-xs text-slate-500">{new Date(invoice.createdAt).toLocaleString('ar-EG-u-nu-latn')}</span>
+          <span className="whitespace-nowrap text-xs text-slate-500">{new Date(invoice.createdAt).toLocaleString('ar-EG-u-nu-latn')}</span>
         </div>
         <table className="mb-3 w-full text-xs">
           <thead>
@@ -873,11 +920,11 @@ function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName
             <div className="flex justify-between"><span>ضريبة القيمة المضافة ({Number(invoice.vatPercent)}%)</span><span>{fmtMoney(invoice.vatAmount)}</span></div>
           )}
           <div className="flex justify-between border-t border-dashed pt-1 font-bold">
-            <span>الإجمالي</span><span>{fmtMoney(invoice.total)} ج.م</span>
+            <span>الإجمالي</span><span className="whitespace-nowrap">{fmtMoney(invoice.total)} ج.م</span>
           </div>
           {Number(invoice.total) > Number(invoice.payments?.[0]?.amount) && (
             <div className="flex justify-between text-slate-500">
-              <span>المتبقي مستحق</span><span>{fmtMoney(Number(invoice.total) - Number(invoice.payments?.[0]?.amount))}</span>
+              <span>المتبقي مستحق</span><span className="whitespace-nowrap">{fmtMoney(Number(invoice.total) - Number(invoice.payments?.[0]?.amount))}</span>
             </div>
           )}
         </div>
@@ -890,14 +937,11 @@ function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName
         <Button
           variant="outline"
           className="flex-1"
-          onClick={() => {
-            if (!shareInvoiceWhatsApp(invoice, invoice.customerPhone, storeName)) {
-              const ok = copyInvoiceText(invoice, storeName);
-              toast[ok ? 'info' : 'error'](ok ? 'نسخنا نص الفاتورة — ألصقه للعميل' : 'لا يوجد رقم موبايل للعميل');
-            }
-          }}
+          disabled={sendingWhatsApp}
+          onClick={sendPdfToWhatsApp}
+          title="تنزيل الفاتورة PDF وفتح محادثة العميل على واتساب ويب"
         >
-          <Send className="h-4 w-4" /> إرسال
+          <MessageCircle className="h-4 w-4" /> {sendingWhatsApp ? 'جاري التجهيز...' : 'واتساب'}
         </Button>
         <Button variant="outline" className="flex-1" onClick={() => window.print()}>
           <Printer className="h-4 w-4" /> طباعة
