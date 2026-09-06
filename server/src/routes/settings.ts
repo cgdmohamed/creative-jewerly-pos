@@ -13,11 +13,28 @@ settingsRouter.get('/public', async (_req, res) => {
 
 settingsRouter.use(authenticate);
 
-const SETTINGS: Record<string, 'bool' | 'number' | 'text'> = {
-  store_name: 'text',
-  cashier_discount_enabled: 'bool',
-  cashier_cap_override_enabled: 'bool',
-  vat_percent: 'number',
+type SettingRule =
+  | { type: 'bool' }
+  | { type: 'number'; min: number; max: number }
+  | { type: 'text'; maxLength: number; allowEmpty?: boolean }
+  | { type: 'enum'; values: string[] }
+  | { type: 'logo' };
+
+const SETTINGS: Record<string, SettingRule> = {
+  store_name: { type: 'text', maxLength: 120 },
+  cashier_discount_enabled: { type: 'bool' },
+  cashier_cap_override_enabled: { type: 'bool' },
+  vat_percent: { type: 'number', min: 0, max: 100 },
+  label_template: {
+    type: 'enum',
+    values: ['classic', 'modern', 'arabic-focus', 'slogan', 'metal-first', 'simple-arabic', 'premium-text', 'clean-bold'],
+  },
+  label_logo_data_url: { type: 'logo' },
+  label_logo_enabled: { type: 'bool' },
+  label_brand_name: { type: 'text', maxLength: 80 },
+  label_printer_name: { type: 'text', maxLength: 120 },
+  label_offset_x_mm: { type: 'number', min: -5, max: 5 },
+  label_offset_y_mm: { type: 'number', min: -5, max: 5 },
 };
 
 settingsRouter.get('/', async (_req, res) => {
@@ -31,17 +48,29 @@ settingsRouter.get('/', async (_req, res) => {
 settingsRouter.put('/', requirePermission('settings.manage'), async (req, res) => {
   const body = req.body ?? {};
   const updates: Record<string, string> = {};
-  for (const [key, type] of Object.entries(SETTINGS)) {
+  for (const [key, rule] of Object.entries(SETTINGS)) {
     if (body[key] == null) continue;
-    if (type === 'bool') {
-      updates[key] = body[key] ? 'true' : 'false';
-    } else if (type === 'number') {
+    if (rule.type === 'bool') {
+      updates[key] = body[key] === true || body[key] === 'true' ? 'true' : 'false';
+    } else if (rule.type === 'number') {
       const n = Number(body[key]);
       if (Number.isNaN(n)) return res.status(400).json({ error: `bad.${key}` });
-      updates[key] = String(Math.min(100, Math.max(0, n)));
+      updates[key] = String(Math.min(rule.max, Math.max(rule.min, n)));
+    } else if (rule.type === 'enum') {
+      const value = String(body[key]);
+      if (!rule.values.includes(value)) return res.status(400).json({ error: `bad.${key}` });
+      updates[key] = value;
+    } else if (rule.type === 'logo') {
+      const value = String(body[key]);
+      if (value && (!/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(value) || value.length > 750_000)) {
+        return res.status(400).json({ error: `bad.${key}` });
+      }
+      updates[key] = value;
     } else {
       const value = String(body[key]).trim();
-      if (!value || value.length > 120) return res.status(400).json({ error: `bad.${key}` });
+      if ((!value && !rule.allowEmpty) || value.length > rule.maxLength) {
+        return res.status(400).json({ error: `bad.${key}` });
+      }
       updates[key] = value;
     }
   }
@@ -54,6 +83,10 @@ settingsRouter.put('/', requirePermission('settings.manage'), async (req, res) =
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [key, value]);
   }
-  await audit(poolAsQueryable(), 'app_settings', 'settings', 'update', req.employee!.id, null, updates);
+  const auditUpdates = { ...updates };
+  if (auditUpdates.label_logo_data_url) {
+    auditUpdates.label_logo_data_url = `[thermal logo: ${auditUpdates.label_logo_data_url.length} bytes]`;
+  }
+  await audit(poolAsQueryable(), 'app_settings', 'settings', 'update', req.employee!.id, null, auditUpdates);
   res.json(updates);
 });

@@ -104,6 +104,20 @@ Persistent volumes:
 | `postgres-data` | PostgreSQL data |
 | `uploads-data` | Uploaded item images |
 
+## Jewelry Label Printing
+
+The POS includes eight product-label templates for 70 x 13 mm dumbbell jewelry labels. Managers can choose the default template, upload a monochrome logo, set the brand and preferred printer names, preview the result, and calibrate horizontal or vertical offsets from **Settings > Product Label Printer**.
+
+Labels can be printed individually or in batches from the inventory page. Each item receives a stable numeric internal label code, rendered as QR or Code 128 according to the selected template. Scanning that code in the POS search field adds the matching available item to the cart.
+
+Recommended workstation setup:
+
+- Connect the `LV-1300` printer and a 2D USB HID scanner to the cashier workstation.
+- Configure the printer media as `70 x 13 mm`, gap sensing, zero margins, and 100% scale.
+- Configure the scanner to append Enter after every scan.
+- Keep label codes numeric so scans work with both Arabic and English keyboard layouts.
+- Use the print preview dialog to select the local USB printer. The Coolify server does not access workstation USB devices directly.
+
 The database is initialized automatically on first run from:
 
 1. `db/schema.sql`

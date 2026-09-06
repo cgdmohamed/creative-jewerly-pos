@@ -16,6 +16,7 @@ import { fmtMoney, fmtNum, metalLabel, fmtDateTime, cn } from '@/lib/utils';
 import { copyInvoiceText, shareInvoiceWhatsApp } from '@/lib/invoiceShare';
 import type { CartLine, Item } from '@/lib/types';
 import { storeName } from '@/lib/branding';
+import { labelCodeForItem } from '@/lib/labels';
 
 export default function Pos() {
   const { employee } = useAuth();
@@ -100,23 +101,24 @@ export default function Pos() {
       it.status === 'available' &&
       (it.code.toLowerCase().includes(val.toLowerCase()) ||
         (it.barcode || '').toLowerCase().includes(val.toLowerCase()) ||
+        labelCodeForItem(it).includes(val) ||
         (it.name || '').toLowerCase().includes(val.toLowerCase())),
     );
     setResults(matches);
   };
 
-  const addToCart = (item: Item) => {
+  const addToCart = (item: Item): boolean => {
     const general = isGeneral(item);
     const unit = unitTotal(item);
     if (unit == null) {
       toast.error(general
         ? 'لا يوجد سعر بيع لهذا المنتج — حدّد سعر البيع أولاً'
         : `لا يوجد سعر لليوم لهذا المعدن (${metalLabel(item.metalType || '')} عيار ${item.carat || '—'})`);
-      return;
+      return false;
     }
     if (cart.some((l) => l.item.id === item.id)) {
       toast.warning('القطعة موجودة بالفعل في الفاتورة');
-      return;
+      return false;
     }
     let unitMetal = 0;
     let unitCraft: number;
@@ -139,6 +141,7 @@ export default function Pos() {
     setQuery('');
     setResults([]);
     searchRef.current?.focus();
+    return true;
   };
 
   const removeLine = (id: number) => setCart((c) => c.filter((l) => l.item.id !== id));
@@ -346,9 +349,24 @@ export default function Pos() {
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); doSearch(e.target.value); }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && results.length === 1) addToCart(results[0]);
+                    if (e.key !== 'Enter') return;
+                    const scanned = e.currentTarget.value.trim().toLowerCase();
+                    const exact = (allItems ?? []).find((item) =>
+                      item.status === 'available' && (
+                        labelCodeForItem(item) === scanned ||
+                        item.code.toLowerCase() === scanned ||
+                        (item.barcode || '').toLowerCase() === scanned
+                      ),
+                    );
+                    const item = exact ?? (results.length === 1 ? results[0] : null);
+                    if (item) {
+                      e.preventDefault();
+                      if (addToCart(item)) toast.success(`تمت قراءة ${item.code}`);
+                    } else {
+                      toast.warning('لم يتم العثور على منتج مطابق للرمز');
+                    }
                   }}
-                  placeholder="امسح الباركود أو اكتب الكود/الاسم…"
+                  placeholder="امسح QR / الباركود أو اكتب الكود والاسم…"
                   className="h-12 pr-10 text-base"
                   autoFocus
                 />

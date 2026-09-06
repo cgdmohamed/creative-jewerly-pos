@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { can } from '@/stores/auth';
 import type { WcConfig, WcSyncResult } from '@/lib/types';
+import { PrinterSettingsSection } from '@/components/labels/PrinterSettingsSection';
 
 const OP_OPTIONS = [
   { key: 'products.in', label: 'استيراد المنتجات' },
@@ -201,6 +202,8 @@ export default function Settings() {
           )}
         </CardContent>
       </Card>
+
+      {!isLoading && <PrinterSettingsSection settings={settings} />}
 
       {can('woocommerce.manage') && (
         <Card className="mt-5">

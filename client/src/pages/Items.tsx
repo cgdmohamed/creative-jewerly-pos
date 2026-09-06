@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, History, Pencil, Camera, Tags, Archive, RotateCcw, Trash2, Info, Gem, HandCoins, Image } from 'lucide-react';
+import { Plus, History, Pencil, Camera, Tags, Archive, RotateCcw, Trash2, Info, Gem, HandCoins, Image, Printer } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select, Textarea } from '@/components/ui/input';
@@ -19,6 +19,8 @@ import {
 } from '@/lib/utils';
 import type { Category, Item } from '@/lib/types';
 import { can } from '@/stores/auth';
+import { LabelPrintDialog } from '@/components/labels/LabelPrintDialog';
+import { labelCodeForItem } from '@/lib/labels';
 
 const EMPTY: Record<string, any> = {
   code: '', barcode: '', name: '', description: '', productKind: 'jewelry',
@@ -38,6 +40,8 @@ export default function Items() {
   const [statusValue, setStatusValue] = useState('reserved');
   const [deleteItem, setDeleteItem] = useState<Item | null>(null);
   const [catsOpen, setCatsOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [printItems, setPrintItems] = useState<Item[]>([]);
   const qc = useQueryClient();
 
   const { data: items, isLoading } = useItems(filters);
@@ -45,6 +49,19 @@ export default function Items() {
   const { data: categories } = useCategories();
 
   const pag = usePagination(items, 10, JSON.stringify(filters));
+  const selectedItems = (items ?? []).filter((item) => selectedIds.has(item.id));
+  const pageSelected = pag.slice.length > 0 && pag.slice.every((item) => selectedIds.has(item.id));
+
+  const togglePage = (checked: boolean) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const item of pag.slice) {
+        if (checked) next.add(item.id);
+        else next.delete(item.id);
+      }
+      return next;
+    });
+  };
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['items'] });
@@ -102,6 +119,11 @@ export default function Items() {
         actions={
           can('inventory.manage') ? (
             <div className="flex flex-wrap gap-2">
+              {selectedItems.length > 0 && (
+                <Button variant="outline" onClick={() => setPrintItems(selectedItems)}>
+                  <Printer className="h-4 w-4" /> طباعة المحدد ({selectedItems.length})
+                </Button>
+              )}
               <Button variant="outline" onClick={() => setCatsOpen(true)}>
                 <Tags className="h-4 w-4" /> الفئات
               </Button>
@@ -196,6 +218,15 @@ export default function Items() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    aria-label="تحديد الصفحة"
+                    checked={pageSelected}
+                    onChange={(event) => togglePage(event.target.checked)}
+                    className="h-4 w-4 accent-brand-600"
+                  />
+                </TableHead>
                 <TableHead>الكود</TableHead>
                 <TableHead>الوصف</TableHead>
                 <TableHead>المعدن / العيار</TableHead>
@@ -209,13 +240,28 @@ export default function Items() {
             </TableHeader>
             <TableBody>
               {isLoading && (
-                <TableRow><TableCell colSpan={9} className="text-center py-8 text-slate-400">جارٍ التحميل…</TableCell></TableRow>
+                <TableRow><TableCell colSpan={10} className="text-center py-8 text-slate-400">جارٍ التحميل…</TableCell></TableRow>
               )}
               {pag.slice.map((it) => (
                 <TableRow key={it.id}>
                   <TableCell>
+                    <input
+                      type="checkbox"
+                      aria-label={`تحديد ${it.code}`}
+                      checked={selectedIds.has(it.id)}
+                      onChange={(event) => setSelectedIds((previous) => {
+                        const next = new Set(previous);
+                        if (event.target.checked) next.add(it.id);
+                        else next.delete(it.id);
+                        return next;
+                      })}
+                      className="h-4 w-4 accent-brand-600"
+                    />
+                  </TableCell>
+                  <TableCell>
                     <div className="font-mono text-xs font-bold">{it.code}</div>
                     {it.barcode && <div className="text-xs text-slate-400">باركود: {it.barcode}</div>}
+                    <div className="font-mono text-[10px] text-slate-400">ملصق: {labelCodeForItem(it)}</div>
                   </TableCell>
                   <TableCell>
                     <div className="font-medium text-slate-800">{it.name || '—'}</div>
@@ -256,6 +302,9 @@ export default function Items() {
                   <TableCell className="text-xs">{it.locationName}</TableCell>
                   <TableCell className="text-end">
                     <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon" title="طباعة الملصق" onClick={() => setPrintItems([it])}>
+                        <Printer className="h-3.5 w-3.5" />
+                      </Button>
                       <Button variant="ghost" size="sm" onClick={() => { setAuditItem(it); }}>
                         <History className="h-3.5 w-3.5" /> سجل
                       </Button>
@@ -294,7 +343,7 @@ export default function Items() {
                 </TableRow>
               ))}
               {(items ?? []).length === 0 && !isLoading && (
-                <TableRow><TableCell colSpan={9} className="text-center py-8 text-slate-400">لا توجد قطع مطابقة</TableCell></TableRow>
+                <TableRow><TableCell colSpan={10} className="text-center py-8 text-slate-400">لا توجد قطع مطابقة</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
@@ -309,6 +358,12 @@ export default function Items() {
         onSubmit={(body: any) => saveMutation.mutate(body)}
         locations={locations ?? []}
         categories={categories ?? []}
+      />
+
+      <LabelPrintDialog
+        items={printItems}
+        open={printItems.length > 0}
+        onClose={() => setPrintItems([])}
       />
 
       {auditItem && <AuditDialog item={auditItem} onClose={() => setAuditItem(null)} />}

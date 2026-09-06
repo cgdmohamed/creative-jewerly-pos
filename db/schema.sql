@@ -467,6 +467,12 @@ INSERT INTO app_settings (key, value) VALUES
   ('store_name','محل السبائك والمشغولات'),
   ('cashier_discount_enabled','true'),
   ('cashier_cap_override_enabled','true'),
-  ('vat_percent','0');
+  ('vat_percent','0'),
+  ('label_template','clean-bold'),
+  ('label_logo_enabled','true'),
+  ('label_brand_name','GOLDEN CROWN'),
+  ('label_printer_name','LV-1300'),
+  ('label_offset_x_mm','0'),
+  ('label_offset_y_mm','0');
 
 COMMIT;

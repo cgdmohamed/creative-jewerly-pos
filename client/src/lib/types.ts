@@ -38,6 +38,7 @@ export interface Category {
 export interface Item {
   id: number;
   code: string;
+  labelCode?: string;
   barcode?: string | null;
   name?: string | null;
   description?: string | null;
@@ -92,6 +93,13 @@ export interface AppSettings {
   cashier_discount_enabled?: string;
   cashier_cap_override_enabled?: string;
   vat_percent?: string;
+  label_template?: string;
+  label_logo_data_url?: string;
+  label_logo_enabled?: string;
+  label_brand_name?: string;
+  label_printer_name?: string;
+  label_offset_x_mm?: string;
+  label_offset_y_mm?: string;
 }
 
 export interface Customer {

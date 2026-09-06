@@ -42,6 +42,7 @@ export const ITEM_SELECT = `
   SELECT i.*, c.code AS category_code, c.name_ar AS category_name,
          l.code AS location_code, l.name_ar AS location_name,
          e.full_name AS created_by_name,
+         ('99' || LPAD(i.id::text, 6, '0')) AS label_code,
          (i.notes IS NOT NULL AND i.notes LIKE '%' || '${PLACEHOLDER_MARKER}' || '%') AS needs_review
     FROM items i
     LEFT JOIN categories c ON c.id = i.category_id
@@ -60,8 +61,17 @@ itemsRouter.get('/', async (req, res) => {
     conds.push(`i.notes ILIKE '%' || '${PLACEHOLDER_MARKER}' || '%'`);
   }
   if (search) {
-    params.push(`%${search}%`);
-    conds.push(`(i.code ILIKE $${params.length} OR i.barcode ILIKE $${params.length} OR i.name ILIKE $${params.length} OR i.description ILIKE $${params.length})`);
+    const value = String(search).trim();
+    params.push(`%${value}%`);
+    const textParam = params.length;
+    const labelMatch = /^99(\d{6,})$/.exec(value);
+    const labelItemId = labelMatch ? Number(labelMatch[1]) : NaN;
+    if (Number.isInteger(labelItemId) && labelItemId > 0 && labelItemId <= 2_147_483_647) {
+      params.push(labelItemId);
+      conds.push(`(i.code ILIKE $${textParam} OR i.barcode ILIKE $${textParam} OR i.name ILIKE $${textParam} OR i.description ILIKE $${textParam} OR i.id = $${params.length})`);
+    } else {
+      conds.push(`(i.code ILIKE $${textParam} OR i.barcode ILIKE $${textParam} OR i.name ILIKE $${textParam} OR i.description ILIKE $${textParam})`);
+    }
   }
   if (includeInactive === 'true') conds[0] = `TRUE`;
   const rows = await query(
