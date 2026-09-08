@@ -33,13 +33,21 @@ const FEATURES = [
   },
 ];
 
+const WORKMANSHIP_PROFILES = [
+  { key: 'new', label: 'المشغولات الجديدة' },
+  { key: 'used', label: 'المشغولات المستعملة' },
+  { key: 'bullion', label: 'السبائك' },
+] as const;
+
 export default function Settings() {
   const { data: settings, isLoading } = useSettings();
   const qc = useQueryClient();
   const [draft, setDraft] = useState<Record<string, boolean>>({});
   const [vatDraft, setVatDraft] = useState<string>('');
   const [storeNameDraft, setStoreNameDraft] = useState<string | null>(null);
-  const isEditing = Object.keys(draft).length > 0 || vatDraft !== '' || storeNameDraft !== null;
+  const [workmanshipDraft, setWorkmanshipDraft] = useState<Record<string, string>>({});
+  const isEditing = Object.keys(draft).length > 0 || Object.keys(workmanshipDraft).length > 0
+    || vatDraft !== '' || storeNameDraft !== null;
 
   const { data: wcConfig } = useQuery({
     queryKey: ['wc-config'],
@@ -86,6 +94,7 @@ export default function Settings() {
       setDraft({});
       setVatDraft('');
       setStoreNameDraft(null);
+      setWorkmanshipDraft({});
       qc.invalidateQueries({ queryKey: ['settings'] });
     },
     onError: (e: any) => toast.error('خطأ: ' + e.message),
@@ -111,6 +120,7 @@ export default function Settings() {
       ...draft,
       ...(vatDraft !== '' ? { vat_percent: vatValue } : {}),
       ...(storeNameDraft !== null ? { store_name: storeNameValue.trim() } : {}),
+      ...workmanshipDraft,
     });
 
   return (
@@ -144,6 +154,51 @@ export default function Settings() {
                 onChange={(e) => setStoreNameDraft(e.target.value)}
                 className="mt-3 h-10 w-full max-w-md rounded-lg border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none"
               />
+            </div>
+          )}
+
+          {!isLoading && (
+            <div className="rounded-xl border border-slate-200 p-4">
+              <div className="font-bold text-slate-900">تعريفات المصنعية</div>
+              <div className="mt-1 text-sm text-slate-500">
+                تُستخدم كقيمة مقترحة عند إضافة قطعة جديدة، وتظل مصنعية كل قطعة محفوظة بصورة مستقلة.
+              </div>
+              <div className="mt-4 grid gap-3">
+                {WORKMANSHIP_PROFILES.map((profile) => {
+                  const typeKey = `workmanship_${profile.key}_type`;
+                  const valueKey = `workmanship_${profile.key}_value`;
+                  const type = workmanshipDraft[typeKey] ?? settings?.[typeKey] ?? 'per_gram';
+                  const value = workmanshipDraft[valueKey] ?? settings?.[valueKey] ?? '0';
+                  return (
+                    <div key={profile.key} className="grid items-end gap-3 rounded-lg bg-slate-50 p-3 sm:grid-cols-[1fr_170px_150px]">
+                      <div className="pb-2 text-sm font-bold text-slate-800">{profile.label}</div>
+                      <label className="text-xs text-slate-500">
+                        طريقة الحساب
+                        <select
+                          value={type}
+                          onChange={(e) => setWorkmanshipDraft((d) => ({ ...d, [typeKey]: e.target.value }))}
+                          className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
+                        >
+                          <option value="per_gram">لكل جرام</option>
+                          <option value="fixed">ثابتة للقطعة</option>
+                          <option value="percent">نسبة %</option>
+                        </select>
+                      </label>
+                      <label className="text-xs text-slate-500">
+                        القيمة
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={value}
+                          onChange={(e) => setWorkmanshipDraft((d) => ({ ...d, [valueKey]: e.target.value }))}
+                          className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-end text-sm"
+                        />
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

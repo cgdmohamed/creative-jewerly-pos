@@ -38,10 +38,12 @@ shiftsRouter.get('/current', async (req, res) => {
   if (!row) return res.json(null);
 
   const totals = await query<any>(
-    `SELECT p.method, COALESCE(SUM(p.amount),0) AS expected
-       FROM payments p JOIN invoices inv ON inv.id = p.invoice_id
-      WHERE inv.shift_id = $1 AND inv.status = 'active'
-      GROUP BY p.method`,
+    `SELECT method, COALESCE(SUM(amount),0) AS expected FROM (
+       SELECT p.method,p.amount FROM payments p JOIN invoices inv ON inv.id=p.invoice_id
+        WHERE inv.shift_id=$1 AND p.affects_shift
+       UNION ALL
+       SELECT r.method,-r.amount FROM refunds r WHERE r.shift_id=$1
+     ) movements GROUP BY method`,
     [row.id],
   );
   const names = await query<any>(`SELECT code, name_ar FROM payment_methods`);
@@ -81,10 +83,12 @@ shiftsRouter.post('/:id/close', requirePermission('shift.close'), async (req, re
 
   const row = await tx(async (q) => {
     const totals = await q.query<any>(
-      `SELECT p.method, COALESCE(SUM(p.amount),0) AS expected
-         FROM payments p JOIN invoices inv ON inv.id = p.invoice_id
-        WHERE inv.shift_id = $1 AND inv.status = 'active'
-        GROUP BY p.method`, [id]);
+      `SELECT method, COALESCE(SUM(amount),0) AS expected FROM (
+         SELECT p.method,p.amount FROM payments p JOIN invoices inv ON inv.id=p.invoice_id
+          WHERE inv.shift_id=$1 AND p.affects_shift
+         UNION ALL
+         SELECT r.method,-r.amount FROM refunds r WHERE r.shift_id=$1
+       ) movements GROUP BY method`, [id]);
     const expectedByMethod: Record<string, number> = {};
     for (const t of totals) expectedByMethod[t.method] = Number(t.expected);
 

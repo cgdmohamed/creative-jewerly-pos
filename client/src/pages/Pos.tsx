@@ -156,7 +156,9 @@ export default function Pos() {
       unitCraft =
         item.craftsmanshipType === 'percent'
           ? (unitMetal * Number(item.craftsmanshipValue)) / 100
-          : Number(item.craftsmanshipValue);
+          : item.craftsmanshipType === 'per_gram'
+            ? Number(item.weightG) * Number(item.craftsmanshipValue)
+            : Number(item.craftsmanshipValue);
     }
     setCart((c) => [
       ...c,
@@ -186,22 +188,25 @@ export default function Pos() {
         const craft =
           l.item.craftsmanshipType === 'percent'
             ? (metalTotal * Number(l.item.craftsmanshipValue)) / 100
-            : Number(l.item.craftsmanshipValue) * q;
+            : l.item.craftsmanshipType === 'per_gram'
+              ? Number(l.item.weightG) * Number(l.item.craftsmanshipValue) * q
+              : Number(l.item.craftsmanshipValue) * q;
         return { ...l, quantity: q, metalTotal, craft, lineTotal: metalTotal + craft };
       }),
     );
   };
 
-  const metalSubtotal = cart.reduce((s, l) => s + l.metalTotal, 0);
-  const rawCraftTotal = cart.reduce((s, l) => s + l.craft, 0);
+  const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+  const metalSubtotal = roundMoney(cart.reduce((s, l) => s + l.metalTotal, 0));
+  const rawCraftTotal = roundMoney(cart.reduce((s, l) => s + l.craft, 0));
   const discount =
     discountType === 'fixed'
-      ? Math.min(Number(discountValue || 0), rawCraftTotal)
-      : (rawCraftTotal * Number(discountPercent || 0)) / 100;
-  const craftTotal = rawCraftTotal - discount;
+      ? Math.min(roundMoney(Number(discountValue || 0)), rawCraftTotal)
+      : roundMoney((rawCraftTotal * Number(discountPercent || 0)) / 100);
+  const craftTotal = roundMoney(rawCraftTotal - discount);
   const vatPercent = Number(settings?.vat_percent ?? 0);
-  const vat = vatPercent > 0 ? ((metalSubtotal + craftTotal) * vatPercent) / 100 : 0;
-  const total = metalSubtotal + craftTotal + vat;
+  const vat = vatPercent > 0 ? roundMoney(((metalSubtotal + craftTotal) * vatPercent) / 100) : 0;
+  const total = roundMoney(metalSubtotal + craftTotal + vat);
 
   const paidNum = paidAmount ? Number(paidAmount) : 0;
   const hasPaid = paidAmount.trim() !== '';
@@ -967,9 +972,12 @@ function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName
           <div className="flex justify-between border-t border-dashed pt-1 font-bold">
             <span>الإجمالي</span><span className="whitespace-nowrap">{fmtMoney(invoice.total)} ج.م</span>
           </div>
-          {Number(invoice.total) > Number(invoice.payments?.[0]?.amount) && (
-            <div className="flex justify-between text-slate-500">
-              <span>المتبقي مستحق</span><span className="whitespace-nowrap">{fmtMoney(Number(invoice.total) - Number(invoice.payments?.[0]?.amount))}</span>
+          <div className="flex justify-between text-emerald-700">
+            <span>المحصل</span><span className="whitespace-nowrap">{fmtMoney(invoice.paidAmount ?? 0)}</span>
+          </div>
+          {Number(invoice.remainingDue) > 0 && (
+            <div className="flex justify-between font-bold text-amber-700">
+              <span>المتبقي مستحق</span><span className="whitespace-nowrap">{fmtMoney(invoice.remainingDue)}</span>
             </div>
           )}
         </div>

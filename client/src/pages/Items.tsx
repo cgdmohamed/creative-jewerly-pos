@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, History, Pencil, Camera, Tags, Archive, RotateCcw, Trash2, Info, Gem, HandCoins, Image, Printer } from 'lucide-react';
+import { Plus, History, Pencil, Camera, Tags, Archive, RotateCcw, Trash2, Info, Gem, HandCoins, Image, Printer, RefreshCw } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select, Textarea } from '@/components/ui/input';
@@ -10,7 +10,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, confirmDialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { useCategories, useItems, useLocations, useItemAudit } from '@/hooks/useData';
+import { useCategories, useItems, useLocations, useItemAudit, useSettings } from '@/hooks/useData';
 import { usePagination } from '@/hooks/usePagination';
 import { api } from '@/lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -25,7 +25,8 @@ import { labelCodeForItem } from '@/lib/labels';
 const EMPTY: Record<string, any> = {
   code: '', barcode: '', name: '', description: '', productKind: 'jewelry',
   metalType: 'gold', carat: '', salePrice: '',
-  weightG: '', stoneWeightG: '0', craftsmanshipType: 'fixed', craftsmanshipValue: '0',
+  weightG: '', stoneWeightG: '0', craftsmanshipType: 'per_gram', craftsmanshipValue: '0',
+  craftsmanshipProfile: 'new_jewelry',
   cost: '', metalPriceAtAdd: '', sourceSupplier: '', physicalStatus: 'new',
   manufacturingVarianceG: '0', notes: '', categoryId: undefined, currentLocationId: undefined, size: '',
   quantity: '1', minQty: '0', maxQty: '',
@@ -47,6 +48,7 @@ export default function Items() {
   const { data: items, isLoading } = useItems(filters);
   const { data: locations } = useLocations();
   const { data: categories } = useCategories();
+  const { data: settings } = useSettings();
 
   const pag = usePagination(items, 10, JSON.stringify(filters));
   const selectedItems = (items ?? []).filter((item) => selectedIds.has(item.id));
@@ -260,8 +262,7 @@ export default function Items() {
                   </TableCell>
                   <TableCell>
                     <div className="font-mono text-xs font-bold">{it.code}</div>
-                    {it.barcode && <div className="text-xs text-slate-400">باركود: {it.barcode}</div>}
-                    <div className="font-mono text-[10px] text-slate-400">ملصق: {labelCodeForItem(it)}</div>
+                    <div className="font-mono text-[10px] text-slate-400">{labelCodeForItem(it)}</div>
                   </TableCell>
                   <TableCell>
                     <div className="font-medium text-slate-800">{it.name || '—'}</div>
@@ -290,7 +291,9 @@ export default function Items() {
                       ? (it.salePrice != null ? `سعر ثابت: ${fmtMoney(it.salePrice)}` : '—')
                       : it.craftsmanshipType === 'percent'
                         ? `${it.craftsmanshipValue}%`
-                        : fmtMoney(it.craftsmanshipValue)}
+                        : it.craftsmanshipType === 'per_gram'
+                          ? `${fmtMoney(it.craftsmanshipValue)} / جم`
+                          : fmtMoney(it.craftsmanshipValue)}
                   </TableCell>
                   <TableCell><Badge tone={STATUS_BADGE[it.status]}>{STATUS_LABELS[it.status]}</Badge>
                     {it.needsReview && (
@@ -358,6 +361,7 @@ export default function Items() {
         onSubmit={(body: any) => saveMutation.mutate(body)}
         locations={locations ?? []}
         categories={categories ?? []}
+        settings={settings ?? {}}
       />
 
       <LabelPrintDialog
@@ -422,16 +426,28 @@ export default function Items() {
   );
 }
 
-function ItemForm({ open, editing, onClose, onSubmit, locations, categories }: any) {
+function ItemForm({ open, editing, onClose, onSubmit, locations, categories, settings }: any) {
   const [form, setForm] = useState<any>(EMPTY);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
+  const [barcodeGenerating, setBarcodeGenerating] = useState(false);
   const qc = useQueryClient();
+
+  const profilePricing = (profile: string) => {
+    const key = profile === 'bullion' ? 'bullion' : profile === 'used_jewelry' ? 'used' : 'new';
+    return {
+      craftsmanshipType: settings[`workmanship_${key}_type`] ?? 'per_gram',
+      craftsmanshipValue: settings[`workmanship_${key}_value`] ?? '0',
+    };
+  };
 
   useEffect(() => {
     if (open) {
-      setForm(editing ? { ...EMPTY, ...editing, quantity: editing.quantity ?? 1 } : { ...EMPTY });
+      setForm(editing
+        ? { ...EMPTY, ...editing, barcode: editing.barcode || labelCodeForItem(editing), quantity: editing.quantity ?? 1 }
+        : { ...EMPTY, ...profilePricing('new_jewelry') });
       setPhotoFile(null);
+      setBarcodeGenerating(false);
     }
   }, [open, editing]);
 
@@ -470,14 +486,54 @@ function ItemForm({ open, editing, onClose, onSubmit, locations, categories }: a
             <Field label="كود القطعة *">
               <Input value={form.code} onChange={(e) => set('code', e.target.value)} placeholder="BAR-21-001" dir="ltr" />
             </Field>
-            <Field label="الباركود">
-              <Input value={form.barcode} onChange={(e) => set('barcode', e.target.value)} dir="ltr" />
+            <Field label="رقم الباركود / الملصق">
+              <div className="flex gap-2" dir="ltr">
+                <Input value={form.barcode} disabled inputMode="numeric" />
+                {!editing && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    title="توليد رقم ملصق جديد"
+                    loading={barcodeGenerating}
+                    onClick={async () => {
+                      setBarcodeGenerating(true);
+                      try {
+                        const result = await api<{ barcode: string }>('/api/items/generate-barcode', { method: 'POST' });
+                        set('barcode', result.barcode);
+                      } catch (error: any) {
+                        toast.error('تعذر توليد رقم الملصق: ' + (error.message || 'خطأ'));
+                      } finally {
+                        setBarcodeGenerating(false);
+                      }
+                    }}
+                  >
+                    <RefreshCw className="h-4 w-4" /> توليد
+                  </Button>
+                )}
+              </div>
             </Field>
             <Field label="الاسم / الوصف">
               <Input value={form.name} onChange={(e) => set('name', e.target.value)} />
             </Field>
             <Field label="الفئة">
-              <Select value={form.categoryId ?? ''} onChange={(e) => set('categoryId', Number(e.target.value))}>
+              <Select value={form.categoryId ?? ''} onChange={(e) => {
+                const categoryId = Number(e.target.value) || undefined;
+                const category = categories.find((c: any) => c.id === categoryId);
+                const isBullion = /(bullion|bar|ingot)/i.test(category?.code ?? '')
+                  || /(سبائك|سبيكة)/.test(category?.nameAr ?? '');
+                setForm((current: any) => ({
+                  ...current,
+                  categoryId,
+                  ...(isBullion
+                    ? { craftsmanshipProfile: 'bullion', ...profilePricing('bullion') }
+                    : current.craftsmanshipProfile === 'bullion'
+                      ? {
+                        craftsmanshipProfile: current.physicalStatus === 'used' ? 'used_jewelry' : 'new_jewelry',
+                        ...profilePricing(current.physicalStatus === 'used' ? 'used_jewelry' : 'new_jewelry'),
+                      }
+                      : {}),
+                }));
+              }}>
                 <option value="">—</option>
                 {categories.map((c: any) => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
               </Select>
@@ -535,7 +591,19 @@ function ItemForm({ open, editing, onClose, onSubmit, locations, categories }: a
               <Input type="number" step="0.001" value={form.manufacturingVarianceG} onChange={(e) => set('manufacturingVarianceG', e.target.value)} />
             </Field>
             <Field label="الحالة الفيزيائية">
-              <Select value={form.physicalStatus} onChange={(e) => set('physicalStatus', e.target.value)}>
+              <Select value={form.physicalStatus} onChange={(e) => {
+                const physicalStatus = e.target.value;
+                setForm((current: any) => ({
+                  ...current,
+                  physicalStatus,
+                  ...(current.craftsmanshipProfile === 'bullion' || current.craftsmanshipProfile === 'custom'
+                    ? {}
+                    : {
+                      craftsmanshipProfile: physicalStatus === 'used' ? 'used_jewelry' : 'new_jewelry',
+                      ...profilePricing(physicalStatus === 'used' ? 'used_jewelry' : 'new_jewelry'),
+                    }),
+                }));
+              }}>
                 <option value="new">جديدة</option>
                 <option value="used">مستعملة</option>
               </Select>
@@ -562,11 +630,27 @@ function ItemForm({ open, editing, onClose, onSubmit, locations, categories }: a
             <Field label="نوع المصنعية">
               <Select value={form.craftsmanshipType} onChange={(e) => set('craftsmanshipType', e.target.value)}>
                 <option value="fixed">ثابتة</option>
+                <option value="per_gram">لكل جرام</option>
                 <option value="percent">نسبة %</option>
               </Select>
             </Field>
-            <Field label={form.craftsmanshipType === 'percent' ? 'المصنعية %' : 'المصنعية (ج.م)'}>
-              <Input type="number" value={form.craftsmanshipValue} onChange={(e) => set('craftsmanshipValue', e.target.value)} />
+            <Field label="تصنيف المصنعية">
+              <Select value={form.craftsmanshipProfile} onChange={(e) => {
+                const craftsmanshipProfile = e.target.value;
+                setForm((current: any) => ({
+                  ...current,
+                  craftsmanshipProfile,
+                  ...(craftsmanshipProfile === 'custom' ? {} : profilePricing(craftsmanshipProfile)),
+                }));
+              }}>
+                <option value="new_jewelry">مشغولات جديدة</option>
+                <option value="used_jewelry">مشغولات مستعملة</option>
+                <option value="bullion">سبائك</option>
+                <option value="custom">مخصص</option>
+              </Select>
+            </Field>
+            <Field label={form.craftsmanshipType === 'percent' ? 'المصنعية %' : form.craftsmanshipType === 'per_gram' ? 'المصنعية لكل جرام (ج.م)' : 'المصنعية للقطعة (ج.م)'}>
+              <Input type="number" min="0" step="0.01" value={form.craftsmanshipValue} onChange={(e) => set('craftsmanshipValue', e.target.value)} />
             </Field>
             <Field label="التكلفة / التصنيع">
               <Input type="number" value={form.cost} onChange={(e) => set('cost', e.target.value)} />
@@ -645,6 +729,7 @@ function ItemForm({ open, editing, onClose, onSubmit, locations, categories }: a
               manufacturingVarianceG: isGeneral ? 0 : Number(form.manufacturingVarianceG ?? 0),
               craftsmanshipType: isGeneral ? 'fixed' : form.craftsmanshipType,
               craftsmanshipValue: isGeneral ? 0 : Number(form.craftsmanshipValue ?? 0),
+              craftsmanshipProfile: isGeneral ? 'custom' : form.craftsmanshipProfile,
               quantity: Number(form.quantity) || 1,
               minQty: Math.max(0, Number(form.minQty) || 0),
               maxQty: form.maxQty === '' || form.maxQty == null ? null : Math.max(Number(form.maxQty) || 0, Number(form.minQty) || 0),

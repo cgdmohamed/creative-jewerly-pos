@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { query, queryOne, tx } from '../db.js';
+import { query, tx } from '../db.js';
 import { audit, camelizeRows } from '../utils.js';
-import { buildInvoice, poolAsQueryable, returnInvoice } from './invoices.js';
+import { buildInvoice, returnInvoice } from './invoices.js';
 import { createReservation } from './reservations.js';
 import { ITEM_SELECT } from './items.js';
 
@@ -31,43 +31,43 @@ syncRouter.post('/outbox', async (req, res) => {
         throw Object.assign(new Error('forbidden'), { status: 403 });
       }
 
-      const prior = await queryOne<any>(
-        `SELECT payload->>'invoiceNo' AS invoice_no, payload->>'reservationId' AS reservation_id
-           FROM sync_outbox
-          WHERE device_id=$1 AND op=$2 AND payload->>'opId'=$3 AND status='applied'
-          LIMIT 1`,
-        [deviceId, opType, opId],
-      );
-      if (prior) {
-        results.push({
-          opId, status: 'applied',
-          ...(prior.invoice_no ? { invoiceNo: prior.invoice_no } : {}),
-          ...(prior.reservation_id ? { reservationId: Number(prior.reservation_id) } : {}),
-        });
-        continue;
-      }
+      const outcome = await tx(async (q) => {
+        await q.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`sync:${deviceId}:${opType}:${opId}`]);
+        const prior = await q.queryOne<any>(
+          `SELECT payload->>'invoiceNo' AS invoice_no, payload->>'reservationId' AS reservation_id
+             FROM sync_outbox
+            WHERE device_id=$1 AND op=$2 AND payload->>'opId'=$3 AND status='applied'
+            LIMIT 1`,
+          [deviceId, opType, opId]);
+        if (prior) {
+          return {
+            status: 'applied',
+            ...(prior.invoice_no ? { invoiceNo: prior.invoice_no } : {}),
+            ...(prior.reservation_id ? { reservationId: Number(prior.reservation_id) } : {}),
+          };
+        }
 
-      let outcome: Record<string, any> = { status: 'applied' };
-      if (opType === 'invoice.create') {
-        const cashier = await queryOne<any>(`SELECT * FROM employees WHERE id = $1`, [req.employee!.id]);
-        const inv = await tx(async (q) => buildInvoice(q, payload, req.employee!.id, cashier,
-          req.employee!.permissions.includes('invoice.discount_override')));
-        await audit(poolAsQueryable(), 'invoices', inv.id, 'sync_offline', req.employee!.id, null, payload);
-        outcome.invoiceNo = inv.invoice_no;
-      } else if (opType === 'invoice.return') {
-        const inv = await tx(async (q) =>
-          returnInvoice(q, Number(payload.invoiceId), req.employee!.id, payload.reason));
-        outcome.invoiceNo = inv.invoice_no;
-      } else if (opType === 'reservation.create') {
-        const r = await tx(async (q) => createReservation(q, payload, req.employee!.id));
-        outcome.reservationId = r.id;
-      }
+        const applied: Record<string, any> = { status: 'applied' };
+        if (opType === 'invoice.create') {
+          const cashier = await q.queryOne<any>(`SELECT * FROM employees WHERE id = $1`, [req.employee!.id]);
+          const inv = await buildInvoice(q, payload, req.employee!.id, cashier,
+            req.employee!.permissions.includes('invoice.discount_override'));
+          await audit(q, 'invoices', inv.id, 'sync_offline', req.employee!.id, null, payload);
+          applied.invoiceNo = inv.invoice_no;
+        } else if (opType === 'invoice.return') {
+          const inv = await returnInvoice(q, Number(payload.invoiceId), req.employee!.id, payload.reason);
+          applied.invoiceNo = inv.invoice_no;
+        } else if (opType === 'reservation.create') {
+          const reservation = await createReservation(q, payload, req.employee!.id);
+          applied.reservationId = reservation.id;
+        }
 
-      await query(
-        `INSERT INTO sync_outbox (device_id, op, payload, status, applied_at)
-         VALUES ($1,$2,$3,'applied',now())`,
-        [deviceId, opType, { ...payload, opId, ...outcome }],
-      );
+        await q.query(
+          `INSERT INTO sync_outbox (device_id, op, payload, status, applied_at)
+           VALUES ($1,$2,$3,'applied',now())`,
+          [deviceId, opType, { ...payload, opId, ...applied }]);
+        return applied;
+      });
       results.push({ opId, ...outcome });
     } catch (e: any) {
       const status = e.message?.startsWith('items.not_available') ? 'conflict' : 'rejected';

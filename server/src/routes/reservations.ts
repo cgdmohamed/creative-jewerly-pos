@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate, requirePermission } from '../middleware/auth.js';
-import { query, queryOne, tx, Queryable } from '../db.js';
+import { query, tx, Queryable } from '../db.js';
 import { camelize, camelizeRows, audit, deriveStatus } from '../utils.js';
 
 export const reservationsRouter = Router();
@@ -34,7 +34,12 @@ export async function createReservation(db: Queryable, b: any, employeeId: numbe
   if (!itemId || (!customerName && !customerId) || downPayment == null || totalValue == null) badRequest('missing');
   const qty = Number(quantity ?? 1);
   if (!Number.isInteger(qty) || qty < 1) badRequest('bad.quantity');
-  const item = await db.queryOne<any>(`SELECT * FROM items WHERE id = $1 AND is_active`, [itemId]);
+  const down = Number(downPayment);
+  const total = Number(totalValue);
+  if (!Number.isFinite(down) || !Number.isFinite(total) || down < 0 || total < 0 || down > total) {
+    badRequest('bad.payment');
+  }
+  const item = await db.queryOne<any>(`SELECT * FROM items WHERE id = $1 AND is_active FOR UPDATE`, [itemId]);
   if (!item) {
     const e: any = new Error('notfound');
     e.status = 404;
@@ -67,8 +72,8 @@ export async function createReservation(db: Queryable, b: any, employeeId: numbe
     `INSERT INTO reservations (item_id, quantity, customer_id, customer_name, customer_phone, down_payment, total_value,
                                remaining_due, reserved_by, notes)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [itemId, qty, cid, name, phone, downPayment, totalValue,
-     Math.max(0, totalValue - downPayment), employeeId, notes || null],
+    [itemId, qty, cid, name, phone, down, total,
+     Math.round((total - down) * 100) / 100, employeeId, notes || null],
   );
   const reservedQty = Number(item.reserved_qty ?? 0) + qty;
   const status = deriveStatus(Number(item.quantity), reservedQty, Number(item.in_transit_qty ?? 0));
@@ -94,13 +99,17 @@ reservationsRouter.post('/', requirePermission('reservation.manage'), async (req
 
 reservationsRouter.post('/:id/cancel', requirePermission('reservation.manage'), async (req, res) => {
   const id = Number(req.params.id);
-  const r = await queryOne<any>(`SELECT * FROM reservations WHERE id = $1`, [id]);
-  if (!r) return res.status(404).json({ error: 'notfound' });
-  if (r.status !== 'active') return res.status(409).json({ error: 'reservation.not_active' });
-
-  await tx(async (q) => {
+  try {
+    await tx(async (q) => {
+    const r = await q.queryOne<any>(`SELECT * FROM reservations WHERE id = $1 FOR UPDATE`, [id]);
+    if (!r) {
+      const e: any = new Error('notfound'); e.status = 404; throw e;
+    }
+    if (r.status !== 'active') {
+      const e: any = new Error('reservation.not_active'); e.status = 409; throw e;
+    }
     await q.query(`UPDATE reservations SET status='cancelled' WHERE id=$1`, [id]);
-    const item = await q.queryOne<any>(`SELECT * FROM items WHERE id=$1`, [r.item_id]);
+    const item = await q.queryOne<any>(`SELECT * FROM items WHERE id=$1 FOR UPDATE`, [r.item_id]);
     if (item) {
       const reservedQty = Math.max(0, Number(item.reserved_qty ?? 0) - Number(r.quantity));
       const status = deriveStatus(
@@ -114,6 +123,9 @@ reservationsRouter.post('/:id/cancel', requirePermission('reservation.manage'), 
         [r.item_id, item.status, status, req.employee!.id]);
     }
     await audit(q, 'reservations', id, 'cancel', req.employee!.id, r, {});
-  });
-  res.json({ ok: true });
+    });
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(e.status || 500).json({ error: e.message || 'error' });
+  }
 });

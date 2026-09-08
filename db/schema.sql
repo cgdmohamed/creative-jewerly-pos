@@ -97,8 +97,10 @@ CREATE TABLE items (
   sale_price                NUMERIC(12,2),                 -- fixed sale price (general products only)
 
   craftsmanship_type        TEXT NOT NULL DEFAULT 'fixed'
-                            CHECK (craftsmanship_type IN ('fixed','percent')),
+                            CHECK (craftsmanship_type IN ('fixed','percent','per_gram')),
   craftsmanship_value       NUMERIC(10,2) NOT NULL DEFAULT 0,
+  craftsmanship_profile     TEXT NOT NULL DEFAULT 'new_jewelry'
+                            CHECK (craftsmanship_profile IN ('new_jewelry','used_jewelry','bullion','custom')),
   cost                      NUMERIC(12,2),                 -- purchase/making cost
   metal_price_at_add        NUMERIC(12,2),                 -- metal price at add time
   source_supplier           TEXT,
@@ -114,6 +116,7 @@ CREATE TABLE items (
   quantity                  INT NOT NULL DEFAULT 1 CHECK (quantity >= 0),       -- pieces in this batch
   reserved_qty              INT NOT NULL DEFAULT 0 CHECK (reserved_qty >= 0),   -- held by reservations
   in_transit_qty            INT NOT NULL DEFAULT 0 CHECK (in_transit_qty >= 0), -- moving between locations
+  CHECK (reserved_qty + in_transit_qty <= quantity),
   available_qty             INT GENERATED ALWAYS AS (quantity - reserved_qty - in_transit_qty) STORED,
 
   current_location_id       INT REFERENCES locations(id),
@@ -216,14 +219,14 @@ CREATE TABLE invoices (
   location_id           INT NOT NULL REFERENCES locations(id),
   customer_id           INT REFERENCES customers(id),
   customer_phone        TEXT,
-  metal_subtotal        NUMERIC(12,2) NOT NULL DEFAULT 0,
-  craftsmanship_total   NUMERIC(12,2) NOT NULL DEFAULT 0,
-  discount_amount       NUMERIC(12,2) NOT NULL DEFAULT 0,
+  metal_subtotal        NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (metal_subtotal >= 0),
+  craftsmanship_total   NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (craftsmanship_total >= 0),
+  discount_amount       NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (discount_amount >= 0),
   discount_reason       TEXT,
   discount_approved_by  INT REFERENCES employees(id),
   vat_percent           NUMERIC(5,2) NOT NULL DEFAULT 0,
-  vat_amount            NUMERIC(12,2) NOT NULL DEFAULT 0,
-  total                 NUMERIC(12,2) NOT NULL,
+  vat_amount            NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (vat_amount >= 0),
+  total                 NUMERIC(12,2) NOT NULL CHECK (total >= 0),
   payment_method        TEXT NOT NULL DEFAULT 'cash',
   status                TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active','returned')),
@@ -234,6 +237,7 @@ CREATE TABLE invoices (
   returned_at           TIMESTAMPTZ,
   returned_by           INT REFERENCES employees(id),
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+  ,CHECK (total = metal_subtotal + craftsmanship_total + vat_amount)
 );
 
 CREATE TABLE invoice_items (
@@ -252,14 +256,27 @@ CREATE TABLE invoice_items (
   line_discount          NUMERIC(12,2) NOT NULL DEFAULT 0,
   cost_snapshot          NUMERIC(12,2),
   line_total             NUMERIC(12,2) NOT NULL
+  ,CHECK (line_discount >= 0 AND line_total >= 0)
 );
 
 CREATE TABLE payments (
   id            SERIAL PRIMARY KEY,
   invoice_id    INT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
   method        TEXT NOT NULL DEFAULT 'cash',
-  amount        NUMERIC(12,2) NOT NULL,
+  amount        NUMERIC(12,2) NOT NULL CHECK (amount >= 0),
+  affects_shift BOOLEAN NOT NULL DEFAULT TRUE,
   received_by   INT REFERENCES employees(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE refunds (
+  id            SERIAL PRIMARY KEY,
+  payment_id    INT UNIQUE NOT NULL REFERENCES payments(id),
+  invoice_id    INT NOT NULL REFERENCES invoices(id),
+  method        TEXT NOT NULL,
+  amount        NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  shift_id      INT,
+  refunded_by   INT REFERENCES employees(id),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -285,9 +302,9 @@ CREATE TABLE reservations (
   customer_id    INT REFERENCES customers(id),
   customer_name  TEXT NOT NULL,
   customer_phone TEXT,
-  down_payment   NUMERIC(12,2) NOT NULL,
-  total_value    NUMERIC(12,2) NOT NULL,
-  remaining_due  NUMERIC(12,2) NOT NULL,
+  down_payment   NUMERIC(12,2) NOT NULL CHECK (down_payment >= 0),
+  total_value    NUMERIC(12,2) NOT NULL CHECK (total_value >= 0),
+  remaining_due  NUMERIC(12,2) NOT NULL CHECK (remaining_due >= 0),
   reserved_by    INT REFERENCES employees(id),
   reserved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   status         TEXT NOT NULL DEFAULT 'active'
@@ -468,6 +485,12 @@ INSERT INTO app_settings (key, value) VALUES
   ('cashier_discount_enabled','true'),
   ('cashier_cap_override_enabled','true'),
   ('vat_percent','0'),
+  ('workmanship_new_type','per_gram'),
+  ('workmanship_new_value','0'),
+  ('workmanship_used_type','per_gram'),
+  ('workmanship_used_value','0'),
+  ('workmanship_bullion_type','per_gram'),
+  ('workmanship_bullion_value','0'),
   ('label_template','basic'),
   ('label_logo_enabled','true'),
   ('label_brand_name','GOLDEN CROWN'),

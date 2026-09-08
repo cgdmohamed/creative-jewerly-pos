@@ -323,7 +323,9 @@ async function exportProducts(ranBy: number | null): Promise<SyncResult> {
         const metalValue = Number(item.weight_g) * metalPrice;
         const craft = item.craftsmanship_type === 'percent'
           ? metalValue * (Number(item.craftsmanship_value) / 100)
-          : Number(item.craftsmanship_value);
+          : item.craftsmanship_type === 'per_gram'
+            ? Number(item.weight_g) * Number(item.craftsmanship_value)
+            : Number(item.craftsmanship_value);
         const vat = vatPct > 0 ? (metalValue + craft) * vatPct / 100 : 0;
         const price = round2(metalValue + craft + vat);
         if (price > 0) body.regular_price = String(price);

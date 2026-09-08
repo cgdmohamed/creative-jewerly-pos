@@ -10,6 +10,7 @@
     "api": "npm run dev --prefix server",
     "web": "npm run dev --prefix client",
     "smoke": "bash scripts/smoke_test.sh",
+    "test:accounting": "npm run test --prefix server",
     "typecheck": "npm run typecheck --prefix server && npm run build --prefix client",
     "build": "npm run build --prefix server && npm run build --prefix client",
     "start": "npm run start --prefix server",

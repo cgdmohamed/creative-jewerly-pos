@@ -104,13 +104,15 @@ export default function Invoices() {
                 <TableHead>العميل</TableHead>
                 <TableHead>الطريقة</TableHead>
                 <TableHead>الإجمالي</TableHead>
+                <TableHead>المحصل</TableHead>
+                <TableHead>المتبقي</TableHead>
                 <TableHead>الخصم</TableHead>
                 <TableHead>الحالة</TableHead>
                 <TableHead className="text-end">إجراءات</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoading && <TableRow><TableCell colSpan={9} className="py-8 text-center text-slate-400">جارٍ التحميل…</TableCell></TableRow>}
+              {isLoading && <TableRow><TableCell colSpan={11} className="py-8 text-center text-slate-400">جارٍ التحميل…</TableCell></TableRow>}
               {pag.slice.map((inv) => (
                 <TableRow key={inv.id}>
                   <TableCell className="font-mono text-xs font-bold">{inv.invoiceNo}</TableCell>
@@ -133,6 +135,8 @@ export default function Invoices() {
                     </span>
                   </TableCell>
                   <TableCell className="font-bold">{fmtMoney(inv.total)}</TableCell>
+                  <TableCell className="font-medium text-emerald-700">{fmtMoney(inv.paidAmount ?? 0)}</TableCell>
+                  <TableCell className="font-medium text-amber-700">{Number(inv.remainingDue) > 0 ? fmtMoney(inv.remainingDue) : '—'}</TableCell>
                   <TableCell className="text-xs text-rose-600">{inv.discountAmount > 0 ? fmtMoney(inv.discountAmount) : '—'}</TableCell>
                   <TableCell>
                     <Badge tone={STATUS_BADGE[inv.status]}>{inv.status === 'active' ? 'نشطة' : 'مُرجعة'}</Badge>
@@ -152,7 +156,7 @@ export default function Invoices() {
                 </TableRow>
               ))}
               {(invoices ?? []).length === 0 && !isLoading && (
-                <TableRow><TableCell colSpan={9} className="py-8 text-center text-slate-400">لا توجد فواتير</TableCell></TableRow>
+                <TableRow><TableCell colSpan={11} className="py-8 text-center text-slate-400">لا توجد فواتير</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
@@ -304,6 +308,14 @@ function InvoiceDetail({ id, onClose }: { id: number; onClose: () => void }) {
               <div className="flex justify-between border-t border-slate-200 pt-2 font-bold">
                 <span>الإجمالي</span><span className="whitespace-nowrap">{fmtMoney(inv.total)} ج.م</span>
               </div>
+              <div className="flex justify-between text-emerald-700">
+                <span>المحصل</span><span>{fmtMoney(inv.paidAmount ?? 0)}</span>
+              </div>
+              {Number(inv.remainingDue) > 0 && (
+                <div className="flex justify-between font-bold text-amber-700">
+                  <span>المتبقي المستحق</span><span>{fmtMoney(inv.remainingDue)}</span>
+                </div>
+              )}
             </div>
           </div>
           <div className="flex flex-wrap justify-end gap-2">

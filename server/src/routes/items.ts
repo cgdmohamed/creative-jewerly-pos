@@ -38,6 +38,35 @@ const upload = multer({
 
 itemsRouter.use(authenticate);
 
+itemsRouter.post('/generate-barcode', requirePermission('inventory.manage'), async (_req, res) => {
+  const row = await tx(async (q) => q.queryOne<{ barcode: string }>(
+    `WITH next_number AS (
+       INSERT INTO label_number_counters (label_date, last_value)
+       VALUES (
+         CURRENT_DATE,
+         COALESCE((
+           SELECT MAX(SUBSTRING(barcode FROM 7 FOR 6)::int)
+             FROM items
+            WHERE barcode ~ ('^' || TO_CHAR(CURRENT_DATE, 'YYMMDD') || '[0-9]{6}$')
+         ), 0) + 1
+       )
+       ON CONFLICT (label_date) DO UPDATE SET
+         last_value = GREATEST(
+           label_number_counters.last_value,
+           COALESCE((
+             SELECT MAX(SUBSTRING(barcode FROM 7 FOR 6)::int)
+               FROM items
+              WHERE barcode ~ ('^' || TO_CHAR(CURRENT_DATE, 'YYMMDD') || '[0-9]{6}$')
+           ), 0)
+         ) + 1
+       RETURNING last_value
+     )
+     SELECT TO_CHAR(CURRENT_DATE, 'YYMMDD') || LPAD(last_value::text, 6, '0') AS barcode
+       FROM next_number`,
+  ));
+  res.json(row);
+});
+
 export const ITEM_SELECT = `
   SELECT i.*, c.code AS category_code, c.name_ar AS category_name,
          l.code AS location_code, l.name_ar AS location_name,
@@ -128,6 +157,17 @@ itemsRouter.post('/', requirePermission('inventory.manage'), async (req, res) =>
   const required = kind === 'jewelry' ? ['code', 'metalType', 'weightG'] : ['code', 'salePrice'];
   const missing = required.filter((k) => b[k] === undefined || b[k] === '' || b[k] === null);
   if (missing.length) return res.status(400).json({ error: `missing:${missing.join(',')}` });
+  const craftsmanshipTypes = new Set(['fixed', 'percent', 'per_gram']);
+  const craftsmanshipProfiles = new Set(['new_jewelry', 'used_jewelry', 'bullion', 'custom']);
+  if (kind === 'jewelry' && !craftsmanshipTypes.has(b.craftsmanshipType ?? 'fixed')) {
+    return res.status(400).json({ error: 'bad.craftsmanshipType' });
+  }
+  if (kind === 'jewelry' && !craftsmanshipProfiles.has(b.craftsmanshipProfile ?? 'new_jewelry')) {
+    return res.status(400).json({ error: 'bad.craftsmanshipProfile' });
+  }
+  if (!Number.isFinite(Number(b.craftsmanshipValue ?? 0)) || Number(b.craftsmanshipValue ?? 0) < 0) {
+    return res.status(400).json({ error: 'bad.craftsmanshipValue' });
+  }
 
   try {
     const row = await tx(async (q) => {
@@ -140,11 +180,11 @@ itemsRouter.post('/', requirePermission('inventory.manage'), async (req, res) =>
         `INSERT INTO items
            (code, barcode, name, description, photo_url, category_id, size,
             metal_type, carat, weight_g, stone_weight_g,
-            craftsmanship_type, craftsmanship_value, cost, metal_price_at_add,
+            craftsmanship_type, craftsmanship_value, craftsmanship_profile, cost, metal_price_at_add,
             source_supplier, source_origin, status, physical_status, notes,
             manufacturing_variance_g, quantity, current_location_id, created_by,
             min_qty, max_qty, product_kind, sale_price)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
          RETURNING *`,
         [
           b.code, b.barcode || null, b.name || null, b.description || null, b.photoUrl || null,
@@ -152,6 +192,7 @@ itemsRouter.post('/', requirePermission('inventory.manage'), async (req, res) =>
           kind === 'jewelry' ? b.metalType : null, kind === 'jewelry' ? b.carat || null : null,
           kind === 'jewelry' ? b.weightG : null, b.stoneWeightG ?? 0,
           b.craftsmanshipType ?? 'fixed', b.craftsmanshipValue ?? 0,
+          b.craftsmanshipProfile ?? 'new_jewelry',
           b.cost ?? null, b.metalPriceAtAdd ?? null, b.sourceSupplier || null,
           b.sourceOrigin || null, status, b.physicalStatus ?? 'new',
           b.notes || null, b.manufacturingVarianceG ?? 0, quantity, locationId, req.employee!.id,
@@ -180,6 +221,17 @@ itemsRouter.put('/:id', requirePermission('inventory.manage'), async (req, res) 
   const old = await queryOne<any>(`SELECT * FROM items WHERE id = $1`, [id]);
   if (!old) return res.status(404).json({ error: 'notfound' });
   const b = req.body ?? {};
+  if (b.craftsmanshipType != null && !['fixed', 'percent', 'per_gram'].includes(b.craftsmanshipType)) {
+    return res.status(400).json({ error: 'bad.craftsmanshipType' });
+  }
+  if (b.craftsmanshipProfile != null
+    && !['new_jewelry', 'used_jewelry', 'bullion', 'custom'].includes(b.craftsmanshipProfile)) {
+    return res.status(400).json({ error: 'bad.craftsmanshipProfile' });
+  }
+  if (b.craftsmanshipValue != null
+    && (!Number.isFinite(Number(b.craftsmanshipValue)) || Number(b.craftsmanshipValue) < 0)) {
+    return res.status(400).json({ error: 'bad.craftsmanshipValue' });
+  }
 
   // A real weight from the manager clears the importer's placeholder marker
   // so the "needs review" alert disappears and price push is re-enabled.
@@ -204,21 +256,22 @@ itemsRouter.put('/:id', requirePermission('inventory.manage'), async (req, res) 
          weight_g = COALESCE($8, weight_g), stone_weight_g = COALESCE($9, stone_weight_g),
          craftsmanship_type = COALESCE($10, craftsmanship_type),
          craftsmanship_value = COALESCE($11, craftsmanship_value),
-         cost = COALESCE($12, cost), metal_price_at_add = COALESCE($13, metal_price_at_add),
-         source_supplier = COALESCE($14, source_supplier),
-         physical_status = COALESCE($15, physical_status),
-         notes = COALESCE($16, notes),
-         manufacturing_variance_g = COALESCE($17, manufacturing_variance_g),
-         current_location_id = COALESCE($18, current_location_id),
-         min_qty = COALESCE($19, min_qty), max_qty = COALESCE($20, max_qty),
-         product_kind = COALESCE($21, product_kind),
-         sale_price = COALESCE($22, sale_price),
+         craftsmanship_profile = COALESCE($12, craftsmanship_profile),
+         cost = COALESCE($13, cost), metal_price_at_add = COALESCE($14, metal_price_at_add),
+         source_supplier = COALESCE($15, source_supplier),
+         physical_status = COALESCE($16, physical_status),
+         notes = COALESCE($17, notes),
+         manufacturing_variance_g = COALESCE($18, manufacturing_variance_g),
+         current_location_id = COALESCE($19, current_location_id),
+         min_qty = COALESCE($20, min_qty), max_qty = COALESCE($21, max_qty),
+         product_kind = COALESCE($22, product_kind),
+         sale_price = COALESCE($23, sale_price),
          updated_at = now()
        WHERE id = $1 RETURNING *`,
       [id, b.barcode ?? null, b.name ?? null, b.description ?? null, b.categoryId ?? null,
        b.size ?? null, b.carat ?? null, b.weightG ?? null, b.stoneWeightG ?? null,
-       b.craftsmanshipType ?? null, b.craftsmanshipValue ?? null, b.cost ?? null,
-       b.metalPriceAtAdd ?? null, b.sourceSupplier ?? null, b.physicalStatus ?? null,
+       b.craftsmanshipType ?? null, b.craftsmanshipValue ?? null, b.craftsmanshipProfile ?? null,
+       b.cost ?? null, b.metalPriceAtAdd ?? null, b.sourceSupplier ?? null, b.physicalStatus ?? null,
        notesValue, b.manufacturingVarianceG ?? null, locationId, minQty, maxQty,
        b.productKind ?? null, Number(b.salePrice) > 0 ? Number(b.salePrice) : null],
     );

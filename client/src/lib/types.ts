@@ -53,8 +53,9 @@ export interface Item {
   carat?: string | null;
   weightG?: number | string | null;
   stoneWeightG: number | string;
-  craftsmanshipType: 'fixed' | 'percent';
+  craftsmanshipType: 'fixed' | 'percent' | 'per_gram';
   craftsmanshipValue: number | string;
+  craftsmanshipProfile?: 'new_jewelry' | 'used_jewelry' | 'bullion' | 'custom';
   cost?: number | string | null;
   metalPriceAtAdd?: number | string | null;
   sourceSupplier?: string | null;
@@ -87,12 +88,19 @@ export interface PriceRow {
 }
 
 export interface AppSettings {
+  [key: string]: string | undefined;
   slow_stock_days?: string;
   currency?: string;
   store_name?: string;
   cashier_discount_enabled?: string;
   cashier_cap_override_enabled?: string;
   vat_percent?: string;
+  workmanship_new_type?: string;
+  workmanship_new_value?: string;
+  workmanship_used_type?: string;
+  workmanship_used_value?: string;
+  workmanship_bullion_type?: string;
+  workmanship_bullion_value?: string;
   label_template?: string;
   label_logo_data_url?: string;
   label_logo_enabled?: string;
@@ -135,6 +143,8 @@ export interface Invoice {
   vatPercent?: number;
   vatAmount?: number;
   total: number;
+  paidAmount?: number;
+  remainingDue?: number;
   paymentMethod: string;
   paymentMethodName?: string;
   paymentMethodColor?: string;
@@ -171,6 +181,7 @@ export interface Payment {
   invoiceId: number;
   method: string;
   amount: number;
+  affectsShift?: boolean;
   receivedByName?: string;
   createdAt: string;
 }

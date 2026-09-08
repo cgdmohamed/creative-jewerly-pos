@@ -16,10 +16,16 @@ export async function getSalesOverview(days = 14) {
        ) x ON x.date = s.d
       ORDER BY s.d`, [days]);
   const byMetal = await query(
-    `SELECT ii.metal_type_snapshot AS metal_type, COUNT(*) AS count, ROUND(SUM(ii.line_total),2) AS total
-       FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id
-      WHERE i.status='active' AND i.created_at >= CURRENT_DATE - interval '30 days'
-      GROUP BY ii.metal_type_snapshot ORDER BY total DESC`);
+    `WITH lines AS (
+       SELECT ii.*, i.total AS invoice_total,
+              SUM(ii.line_total) OVER (PARTITION BY i.id) AS invoice_lines_total
+         FROM invoice_items ii JOIN invoices i ON i.id=ii.invoice_id
+        WHERE i.status='active' AND i.created_at >= CURRENT_DATE - interval '30 days'
+     )
+     SELECT COALESCE(metal_type_snapshot,'general') AS metal_type, SUM(quantity) AS count,
+            ROUND(SUM(CASE WHEN invoice_lines_total=0 THEN 0
+              ELSE invoice_total*line_total/invoice_lines_total END),2) AS total
+       FROM lines GROUP BY COALESCE(metal_type_snapshot,'general') ORDER BY total DESC`);
   const byMethod = await query(
     `SELECT payment_method AS method, COUNT(*) AS count, ROUND(SUM(total),2) AS total
        FROM invoices WHERE status='active' AND created_at >= CURRENT_DATE - interval '30 days'
@@ -36,12 +42,13 @@ export async function getSalesOverview(days = 14) {
 export async function getInventoryValue() {
   const byLocation = await query(
     `SELECT l.id AS location_id, l.name_ar AS location_name,
-            COALESCE(SUM(i.quantity),0) AS piece_count,
-            ROUND(SUM(COALESCE(i.quantity,0) * COALESCE(i.weight_g,0) * COALESCE(ph.price_per_gram,0)), 2) AS metal_value,
-            ROUND(SUM(
-              COALESCE(i.quantity,0) * COALESCE(i.weight_g,0) * COALESCE(ph.price_per_gram,0) +
-              COALESCE(i.quantity,0) * (CASE WHEN i.craftsmanship_type='percent'
-                   THEN COALESCE(i.weight_g,0)*COALESCE(ph.price_per_gram,0)*i.craftsmanship_value/100
+             COALESCE(SUM(GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0)),0) AS piece_count,
+             ROUND(SUM(GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0) * COALESCE(i.weight_g,0) * COALESCE(ph.price_per_gram,0)), 2) AS metal_value,
+             ROUND(SUM(
+               GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0) * COALESCE(i.weight_g,0) * COALESCE(ph.price_per_gram,0) +
+               GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0) * (CASE
+                   WHEN i.craftsmanship_type='percent' THEN COALESCE(i.weight_g,0)*COALESCE(ph.price_per_gram,0)*i.craftsmanship_value/100
+                   WHEN i.craftsmanship_type='per_gram' THEN COALESCE(i.weight_g,0)*i.craftsmanship_value
                    ELSE COALESCE(i.craftsmanship_value,0) END)
             ), 2) AS total_value
        FROM locations l
@@ -54,8 +61,9 @@ export async function getInventoryValue() {
       GROUP BY l.id, l.name_ar
       ORDER BY l.code`);
   const breakdown = await query(
-    `SELECT l.name_ar AS location_name, i.metal_type, i.carat, SUM(i.quantity) AS count,
-            ROUND(SUM(i.quantity * i.weight_g * COALESCE(ph.price_per_gram,0)),2) AS metal_value
+    `SELECT l.name_ar AS location_name, i.metal_type, i.carat,
+             SUM(GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0)) AS count,
+             ROUND(SUM(GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0) * i.weight_g * COALESCE(ph.price_per_gram,0)),2) AS metal_value
        FROM items i
        JOIN locations l ON l.id = i.current_location_id
        LEFT JOIN price_history ph ON ph.metal_type = i.metal_type

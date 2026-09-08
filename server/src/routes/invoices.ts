@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import { allocateDiscount, calculateInvoiceTotals, computeUnitCraftsmanship, normalizePayment, roundMoney } from '../accounting.js';
 import { authenticate, requirePermission } from '../middleware/auth.js';
 import { query, queryOne, tx, Queryable, pool } from '../db.js';
 import { camelize, camelizeRows, audit, deriveStatus, todayLocal } from '../utils.js';
@@ -12,7 +13,9 @@ const INVOICE_SELECT = `
   SELECT inv.*, e.full_name AS cashier_name, l.name_ar AS location_name,
          am.full_name AS approved_by_name, le.full_name AS returned_by_name,
          pm.name_ar AS payment_method_name, pm.color AS payment_method_color,
-         c.name AS customer_name
+         c.name AS customer_name,
+         COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id=inv.id),0) AS paid_amount,
+         GREATEST(inv.total-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id=inv.id),0),0) AS remaining_due
     FROM invoices inv
     LEFT JOIN employees e ON e.id = inv.employee_id
     LEFT JOIN locations l ON l.id = inv.location_id
@@ -71,18 +74,51 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
   if (customerPhone.replace(/\D/g, '').length < 8) throw httpError(400, 'customers.phone_required');
   const customerId = customer.id;
 
+  const combinedItems = new Map<number, number>();
+  for (const line of items) {
+    const itemId = Number(line.itemId);
+    const quantity = Number(line.quantity ?? 1);
+    if (!Number.isInteger(itemId) || itemId < 1 || !Number.isInteger(quantity) || quantity < 1) {
+      throw httpError(400, `bad.quantity:${line.itemId}`);
+    }
+    combinedItems.set(itemId, (combinedItems.get(itemId) ?? 0) + quantity);
+  }
+
+  const reservationIds = [...new Set(
+    (Array.isArray(b.reservationIds) ? b.reservationIds : [])
+      .map(Number)
+      .filter((id: number) => Number.isInteger(id) && id > 0),
+  )];
+  const reservations = reservationIds.length
+    ? await db.query<any>(
+      `SELECT * FROM reservations
+        WHERE id = ANY($1::int[]) AND customer_id=$2 AND status='active'
+        ORDER BY id FOR UPDATE`,
+      [reservationIds, customerId])
+    : [];
+  if (reservations.length !== reservationIds.length) throw httpError(409, 'reservations.invalid');
+  const reservedForSale = new Map<number, number>();
+  for (const reservation of reservations) {
+    const itemId = Number(reservation.item_id);
+    reservedForSale.set(itemId, (reservedForSale.get(itemId) ?? 0) + Number(reservation.quantity));
+  }
+  for (const itemId of reservedForSale.keys()) {
+    if (!combinedItems.has(itemId)) throw httpError(409, 'reservations.item_mismatch');
+  }
+
   const today = todayLocal();
 
   // Load each item + today's active price
   const lines = [];
-  for (const li of items) {
-    const quantity = Number(li.quantity ?? 1);
-    if (!Number.isInteger(quantity) || quantity < 1) throw httpError(400, `bad.quantity:${li.itemId}`);
+  for (const [itemId, quantity] of [...combinedItems].sort((a, z) => a[0] - z[0])) {
     const item = await db.queryOne<any>(
-      `SELECT * FROM items WHERE id = $1 AND is_active`, [Number(li.itemId)]);
-    if (!item) throw httpError(404, `items.notfound:${li.itemId}`);
-    const available = Number(item.quantity) - Number(item.reserved_qty ?? 0) - Number(item.in_transit_qty ?? 0);
-    if (item.status !== 'available' || available < quantity) {
+      `SELECT * FROM items WHERE id = $1 AND is_active FOR UPDATE`, [itemId]);
+    if (!item) throw httpError(404, `items.notfound:${itemId}`);
+    const ownReserved = reservedForSale.get(itemId) ?? 0;
+    if (ownReserved > quantity) throw httpError(409, `reservations.quantity_mismatch:${item.code}`);
+    const available = Number(item.quantity) - Number(item.reserved_qty ?? 0)
+      - Number(item.in_transit_qty ?? 0) + ownReserved;
+    if ((item.status !== 'available' && ownReserved === 0) || available < quantity) {
       throw httpError(409, `items.not_available:${item.code}`);
     }
 
@@ -107,10 +143,12 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
     if (!price) throw httpError(409, `prices.missing_today:${item.metal_type}:${item.carat || '-'}`);
 
     const unitMetalTotal = Number(item.weight_g) * Number(price.price_per_gram);
-    const craft =
-      item.craftsmanship_type === 'percent'
-        ? (unitMetalTotal * Number(item.craftsmanship_value)) / 100
-        : Number(item.craftsmanship_value);
+    const craft = computeUnitCraftsmanship(
+      item.craftsmanship_type,
+      Number(item.craftsmanship_value),
+      Number(item.weight_g),
+      unitMetalTotal,
+    );
 
     lines.push({
       item, quantity,
@@ -120,8 +158,8 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
     });
   }
 
-  const metalSubtotal = lines.reduce((s, l) => s + l.metalTotal, 0);
-  let craftsmanshipTotal = lines.reduce((s, l) => s + l.craft, 0);
+  const metalSubtotalRaw = lines.reduce((s, l) => s + l.metalTotal, 0);
+  const craftsmanshipSubtotalRaw = lines.reduce((s, l) => s + l.craft, 0);
 
   // Discount: percentage OR fixed amount, applied against craftsmanship only.
   // Cashier role can be blocked entirely (cashier_discount_enabled) and the
@@ -142,16 +180,13 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
       throw httpError(403, 'discount.disabled_for_cashier');
     }
 
-    if (discountType === 'fixed') {
-      discountAmount = Math.min(discountValue, craftsmanshipTotal);
-    } else {
-      discountAmount = (craftsmanshipTotal * discountPercent) / 100;
-    }
-
     // Cap enforcement applies to cashiers only; managers (invoice.discount_override) are free
-    if (!hasDiscountOverride && craftsmanshipTotal > 0) {
+    if (!hasDiscountOverride && craftsmanshipSubtotalRaw > 0) {
       const cap = Number(cashier.discount_cap_percent ?? 0);
-      const effectiveRate = (discountAmount / craftsmanshipTotal) * 100;
+      const requestedDiscount = discountType === 'fixed'
+        ? Math.min(discountValue, craftsmanshipSubtotalRaw)
+        : craftsmanshipSubtotalRaw * discountPercent / 100;
+      const effectiveRate = (requestedDiscount / craftsmanshipSubtotalRaw) * 100;
       if (effectiveRate > cap) {
         const capOverrideEnabled = (await getSetting('cashier_cap_override_enabled')) !== 'false';
         if (!capOverrideEnabled) throw httpError(403, 'discount.exceeds_cap');
@@ -165,18 +200,31 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
       }
     }
 
-    craftsmanshipTotal -= discountAmount;
+  }
+
+  // VAT is applied after the craftsmanship discount.
+  const vatPercent = Number((await db.queryOne<any>(
+    `SELECT value FROM app_settings WHERE key = 'vat_percent'`))?.value ?? 0);
+  let totals;
+  try {
+    totals = calculateInvoiceTotals({
+      metalSubtotal: metalSubtotalRaw,
+      craftsmanshipSubtotal: craftsmanshipSubtotalRaw,
+      discountType,
+      discountValue: discountType === 'fixed' ? discountValue : discountPercent,
+      vatPercent,
+    });
+  } catch (error: any) {
+    throw httpError(400, error?.message || 'bad.accounting');
+  }
+  discountAmount = totals.discountAmount;
+  if (discountAmount > 0) {
     discountReason = discountType === 'fixed'
-      ? `خصم ${round2(discountAmount)} على المصنعية`
+      ? `خصم ${discountAmount} على المصنعية`
       : `خصم ${discountPercent}% على المصنعية`;
   }
 
-  // VAT: percentage applied on the pre-tax total, set by manager in settings
-  const vatPercent = Number((await db.queryOne<any>(
-    `SELECT value FROM app_settings WHERE key = 'vat_percent'`))?.value ?? 0);
-  const vatAmount = vatPercent > 0 ? (metalSubtotal + craftsmanshipTotal) * vatPercent / 100 : 0;
-
-  const total = metalSubtotal + craftsmanshipTotal + vatAmount;
+  await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`invoice-number:${today}`]);
   const invoiceNo = `INV-${today.replaceAll('-', '')}-${String(
     (await db.queryOne<any>(`SELECT COUNT(*)::int + 1 AS n FROM invoices WHERE created_at::date = CURRENT_DATE`))?.n ?? 1,
   ).padStart(4, '0')}`;
@@ -192,13 +240,23 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
      RETURNING *`,
     [
       invoiceNo, employeeId, Number(b.locationId) || cashier.location_id || 1,
-      customerId, customerPhone, round2(metalSubtotal), round2(craftsmanshipTotal),
-      round2(discountAmount), discountReason, approvedBy, round2(vatPercent), round2(vatAmount), round2(total),
+      customerId, customerPhone, totals.metalSubtotal, totals.craftsmanshipTotal,
+      totals.discountAmount, discountReason, approvedBy, totals.vatPercent, totals.vatAmount, totals.total,
       b.paymentMethod || 'cash', !!b.isOffline, b.deviceId || null,
     ],
   );
 
-  for (const l of lines) {
+  const lineDiscounts = allocateDiscount(lines.map((line) => line.craft), totals.discountAmount);
+  const lineTotals = lines.map((line, index) =>
+    roundMoney(line.metalTotal + line.craft - lineDiscounts[index]));
+  if (lineTotals.length) {
+    const targetPreTax = roundMoney(totals.metalSubtotal + totals.craftsmanshipTotal);
+    const linesPreTax = roundMoney(lineTotals.reduce((sum, value) => sum + value, 0));
+    lineTotals[lineTotals.length - 1] = roundMoney(
+      lineTotals[lineTotals.length - 1] + targetPreTax - linesPreTax);
+  }
+  for (const [index, l] of lines.entries()) {
+    const lineDiscount = lineDiscounts[index];
     await db.query(
       `INSERT INTO invoice_items
          (invoice_id, item_id, quantity, item_code_snapshot, item_name_snapshot, metal_type_snapshot,
@@ -208,40 +266,52 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
       [
         inv.id, l.item.id, l.quantity, l.item.code, l.item.name, l.item.metal_type, l.item.carat,
         l.item.weight_g ?? 0, l.unitMetalPrice, l.item.metal_price_at_add,
-        round2(l.craft / l.quantity), round2(0), l.item.cost, round2(l.metalTotal + l.craft),
+        roundMoney(l.craft / l.quantity), lineDiscount, l.item.cost, lineTotals[index],
       ],
     );
 
-    const reservedQty = Number(l.item.reserved_qty ?? 0);
+    const releasedReservationQty = reservedForSale.get(Number(l.item.id)) ?? 0;
+    const reservedQty = Math.max(0, Number(l.item.reserved_qty ?? 0) - releasedReservationQty);
     const inTransitQty = Number(l.item.in_transit_qty ?? 0);
     const newQty = Number(l.item.quantity) - l.quantity;
     const newStatus = deriveStatus(newQty, reservedQty, inTransitQty);
     await db.query(
-      `UPDATE items SET quantity = $1, status = $2, updated_at = now() WHERE id = $3`,
-      [newQty, newStatus, l.item.id]);
+      `UPDATE items SET quantity=$1, reserved_qty=$2, status=$3, updated_at=now() WHERE id=$4`,
+      [newQty, reservedQty, newStatus, l.item.id]);
     await db.query(
       `INSERT INTO item_status_history (item_id, from_status, to_status, reason, changed_by)
        VALUES ($1,'available',$2,'Sold - invoice '||$3,$4)`,
       [l.item.id, newStatus === 'available' ? 'sold' : newStatus, invoiceNo, employeeId]);
   }
 
-  const paymentAmount = b.paidAmount ?? total;
-  await db.query(
-    `INSERT INTO payments (invoice_id, method, amount, received_by)
-     VALUES ($1,$2,$3,$4)`,
-    [inv.id, b.paymentMethod || 'cash', round2(paymentAmount), employeeId]);
+  const reservationDeposit = roundMoney(reservations.reduce(
+    (sum, reservation) => sum + Number(reservation.down_payment || 0), 0));
+  const appliedDeposit = Math.min(reservationDeposit, totals.total);
+  let payment;
+  try {
+    const dueNow = roundMoney(totals.total - appliedDeposit);
+    payment = normalizePayment(b.paidAmount, dueNow);
+  } catch (error: any) {
+    throw httpError(400, error?.message || 'bad.payment');
+  }
+  if (appliedDeposit > 0) {
+    await db.query(
+      `INSERT INTO payments (invoice_id, method, amount, received_by, affects_shift)
+       VALUES ($1,$2,$3,$4,false)`,
+      [inv.id, b.paymentMethod || 'cash', appliedDeposit, employeeId]);
+  }
+  if (payment.collected > 0) {
+    await db.query(
+      `INSERT INTO payments (invoice_id, method, amount, received_by, affects_shift)
+       VALUES ($1,$2,$3,$4,true)`,
+      [inv.id, b.paymentMethod || 'cash', payment.collected, employeeId]);
+  }
 
-  // Complete any active reservation for a sold item and release its held qty
-  for (const l of lines) {
-    const active = await db.queryOne<any>(
-      `SELECT id, quantity FROM reservations WHERE item_id=$1 AND status='active'`, [l.item.id]);
-    if (active) {
-      await db.query(`UPDATE reservations SET status='completed', invoice_id=$1 WHERE id=$2`,
-        [inv.id, active.id]);
-      await db.query(
-        `UPDATE items SET reserved_qty = GREATEST(reserved_qty - $1, 0), updated_at = now() WHERE id = $2`,
-        [active.quantity, l.item.id]);
-    }
+  if (reservationIds.length) {
+    await db.query(
+      `UPDATE reservations SET status='completed', invoice_id=$1
+        WHERE id = ANY($2::int[]) AND status='active'`,
+      [inv.id, reservationIds]);
   }
 
   return inv;
@@ -284,9 +354,18 @@ invoicesRouter.post('/', requirePermission('invoice.create'), async (req, res) =
 // Return / cancel an invoice: items go back to 'available' with reason + cashier.
 // Idempotent: an already-returned invoice is returned as-is (safe for offline sync retries).
 export async function returnInvoice(db: Queryable, invoiceId: number, employeeId: number, reason?: string) {
-  const inv = await db.queryOne<any>(`SELECT * FROM invoices WHERE id = $1`, [invoiceId]);
+  const inv = await db.queryOne<any>(`SELECT * FROM invoices WHERE id = $1 FOR UPDATE`, [invoiceId]);
   if (!inv) throw httpError(404, 'notfound');
   if (inv.status !== 'active') return inv;
+
+  const paid = await db.queryOne<any>(
+    `SELECT COALESCE(SUM(amount),0) AS amount FROM payments WHERE invoice_id=$1`, [invoiceId]);
+  const refundShift = Number(paid?.amount || 0) > 0
+    ? await db.queryOne<any>(
+      `SELECT id FROM shifts WHERE employee_id=$1 AND status='open' ORDER BY opened_at DESC LIMIT 1 FOR UPDATE`,
+      [employeeId])
+    : null;
+  if (Number(paid?.amount || 0) > 0 && !refundShift) throw httpError(409, 'shifts.open_required');
 
   await db.query(
     `UPDATE invoices SET status='returned', return_reason=$1, returned_at=now(), returned_by=$2
@@ -296,7 +375,7 @@ export async function returnInvoice(db: Queryable, invoiceId: number, employeeId
   const soldItems = await db.query<any>(
     `SELECT item_id, quantity FROM invoice_items WHERE invoice_id=$1`, [invoiceId]);
   for (const si of soldItems) {
-    const it = await db.queryOne<any>(`SELECT * FROM items WHERE id=$1`, [si.item_id]);
+    const it = await db.queryOne<any>(`SELECT * FROM items WHERE id=$1 FOR UPDATE`, [si.item_id]);
     if (!it) continue;
     const newQty = Number(it.quantity) + Number(si.quantity);
     const newStatus = deriveStatus(
@@ -309,6 +388,13 @@ export async function returnInvoice(db: Queryable, invoiceId: number, employeeId
        VALUES ($1,'sold',$2,$3,$4)`,
       [si.item_id, newStatus, 'Invoice ' + inv.invoice_no + ' returned: ' + (reason || ''), employeeId]);
   }
+  await db.query(
+    `INSERT INTO refunds (payment_id,invoice_id,method,amount,shift_id,refunded_by)
+     SELECT p.id,p.invoice_id,p.method,p.amount,
+            $3,$2
+       FROM payments p WHERE p.invoice_id=$1 AND p.amount>0
+     ON CONFLICT (payment_id) DO NOTHING`,
+    [invoiceId, employeeId, refundShift?.id ?? null]);
   await audit(db, 'invoices', invoiceId, 'return', employeeId, inv, { reason });
   return inv;
 }

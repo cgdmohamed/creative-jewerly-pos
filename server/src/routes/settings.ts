@@ -25,6 +25,12 @@ const SETTINGS: Record<string, SettingRule> = {
   cashier_discount_enabled: { type: 'bool' },
   cashier_cap_override_enabled: { type: 'bool' },
   vat_percent: { type: 'number', min: 0, max: 100 },
+  workmanship_new_type: { type: 'enum', values: ['fixed', 'percent', 'per_gram'] },
+  workmanship_new_value: { type: 'number', min: 0, max: 1_000_000 },
+  workmanship_used_type: { type: 'enum', values: ['fixed', 'percent', 'per_gram'] },
+  workmanship_used_value: { type: 'number', min: 0, max: 1_000_000 },
+  workmanship_bullion_type: { type: 'enum', values: ['fixed', 'percent', 'per_gram'] },
+  workmanship_bullion_value: { type: 'number', min: 0, max: 1_000_000 },
   label_template: {
     type: 'enum',
     values: ['basic', 'classic', 'modern', 'arabic-focus', 'slogan', 'metal-first', 'simple-arabic', 'premium-text', 'clean-bold'],

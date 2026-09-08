@@ -58,8 +58,8 @@ export const LABEL_SAMPLE_ITEM = {
   manufacturingVarianceG: 0,
 } as Item;
 
-export function labelCodeForItem(item: Pick<Item, 'id' | 'labelCode'>): string {
-  return item.labelCode || `99${String(item.id).padStart(6, '0')}`;
+export function labelCodeForItem(item: Pick<Item, 'id' | 'labelCode' | 'barcode'>): string {
+  return item.barcode?.trim() || item.labelCode || `99${String(item.id).padStart(6, '0')}`;
 }
 
 export function labelOptionsFromSettings(settings?: AppSettings): LabelOptions {

@@ -32,29 +32,40 @@ reportsRouter.get('/payments', async (req, res) => {
   const where = conds.join(' AND ');
 
   const byMethod = await query(
-    `SELECT pm.code, pm.name_ar, pm.color, pm.is_active,
-            COUNT(i.id) AS count,
-            COALESCE(ROUND(SUM(i.total),2),0) AS total,
-            COALESCE(ROUND(SUM(i.total),2),0) AS collected
+    `WITH paid AS (SELECT invoice_id, SUM(amount) AS amount FROM payments GROUP BY invoice_id)
+     SELECT pm.code, pm.name_ar, pm.color, pm.is_active,
+             COUNT(i.id) AS count,
+             COALESCE(ROUND(SUM(i.total),2),0) AS total,
+             COALESCE(ROUND(SUM(COALESCE(p.amount,0)),2),0) AS collected,
+             COALESCE(ROUND(SUM(GREATEST(i.total-COALESCE(p.amount,0),0)),2),0) AS outstanding
        FROM payment_methods pm
        LEFT JOIN invoices i ON i.payment_method = pm.code AND ${where}
+       LEFT JOIN paid p ON p.invoice_id=i.id
       GROUP BY pm.code, pm.name_ar, pm.color, pm.is_active, pm.sort_order, pm.id
       ORDER BY pm.is_active DESC, pm.sort_order, pm.id`, params);
   const rows = await query(
     `SELECT i.id, i.invoice_no, i.created_at, i.payment_method, pm.name_ar AS payment_method_name,
             pm.color AS payment_method_color,
-            i.metal_subtotal, i.craftsmanship_total, i.discount_amount, i.total,
-            i.status, l.name_ar AS location_name, e.full_name AS cashier_name
+             i.metal_subtotal, i.craftsmanship_total, i.discount_amount, i.total,
+             COALESCE(p.amount,0) AS collected,
+             GREATEST(i.total-COALESCE(p.amount,0),0) AS outstanding,
+             i.status, l.name_ar AS location_name, e.full_name AS cashier_name
        FROM invoices i
+       LEFT JOIN (SELECT invoice_id, SUM(amount) AS amount FROM payments GROUP BY invoice_id) p ON p.invoice_id=i.id
        LEFT JOIN payment_methods pm ON pm.code = i.payment_method
        LEFT JOIN locations l ON l.id = i.location_id
        LEFT JOIN employees e ON e.id = i.employee_id
       WHERE ${where}
       ORDER BY i.created_at DESC LIMIT 1000`, params);
   const summary = await query(
-    `SELECT COALESCE(ROUND(SUM(total),2),0) AS total, COUNT(*) AS count,
-            COALESCE(ROUND(SUM(total)/NULLIF(COUNT(*),0),2),0) AS avg_invoice
-       FROM invoices i WHERE ${where}`, params);
+    `SELECT COALESCE(ROUND(SUM(i.total),2),0) AS total,
+             COALESCE(ROUND(SUM(COALESCE(p.amount,0)),2),0) AS collected,
+             COALESCE(ROUND(SUM(GREATEST(i.total-COALESCE(p.amount,0),0)),2),0) AS outstanding,
+             COUNT(*) AS count,
+             COALESCE(ROUND(SUM(i.total)/NULLIF(COUNT(*),0),2),0) AS avg_invoice
+       FROM invoices i
+       LEFT JOIN (SELECT invoice_id, SUM(amount) AS amount FROM payments GROUP BY invoice_id) p ON p.invoice_id=i.id
+      WHERE ${where}`, params);
   res.json({ byMethod: camelizeRows(byMethod), rows: camelizeRows(rows), summary: camelizeRows(summary)[0] });
 });
 
@@ -66,12 +77,13 @@ reportsRouter.get('/profitability', async (req, res) => {
     `SELECT inv.invoice_no, inv.created_at, e.full_name AS cashier_name,
             ii.item_code_snapshot, ii.item_name_snapshot, ii.metal_type_snapshot, ii.carat_snapshot,
             ii.weight_g_snapshot, ii.metal_price_snapshot, ii.metal_cost_price,
-            ROUND(ii.weight_g_snapshot * (COALESCE(ii.metal_price_snapshot,0) - COALESCE(ii.metal_cost_price,0)), 2) AS metal_profit,
-            ii.craftsmanship_snapshot AS craftsmanship_charged,
-            COALESCE(ii.cost_snapshot,0) AS cost,
-            ROUND(
-              ii.weight_g_snapshot * (COALESCE(ii.metal_price_snapshot,0) - COALESCE(ii.metal_cost_price,0))
-              + ii.craftsmanship_snapshot - COALESCE(ii.cost_snapshot,0), 2) AS profit,
+             ROUND(ii.quantity * ii.weight_g_snapshot * (COALESCE(ii.metal_price_snapshot,0) - COALESCE(ii.metal_cost_price,0)), 2) AS metal_profit,
+             ROUND(ii.quantity * ii.craftsmanship_snapshot - ii.line_discount,2) AS craftsmanship_charged,
+             ROUND(ii.quantity * COALESCE(ii.cost_snapshot,0),2) AS cost,
+             ROUND(
+               ii.quantity * ii.weight_g_snapshot * (COALESCE(ii.metal_price_snapshot,0) - COALESCE(ii.metal_cost_price,0))
+               + ii.quantity * ii.craftsmanship_snapshot - ii.line_discount
+               - ii.quantity * COALESCE(ii.cost_snapshot,0), 2) AS profit,
             inv.status AS invoice_status
        FROM invoice_items ii
        JOIN invoices inv ON inv.id = ii.invoice_id
@@ -80,8 +92,9 @@ reportsRouter.get('/profitability', async (req, res) => {
       ORDER BY inv.created_at DESC`, params);
   const summary = await query(
     `SELECT COALESCE(SUM(
-              ii.weight_g_snapshot * (COALESCE(ii.metal_price_snapshot,0) - COALESCE(ii.metal_cost_price,0))
-              + ii.craftsmanship_snapshot - COALESCE(ii.cost_snapshot,0)), 0) AS total_profit,
+              ii.quantity * ii.weight_g_snapshot * (COALESCE(ii.metal_price_snapshot,0) - COALESCE(ii.metal_cost_price,0))
+              + ii.quantity * ii.craftsmanship_snapshot - ii.line_discount
+              - ii.quantity * COALESCE(ii.cost_snapshot,0)), 0) AS total_profit,
             COUNT(DISTINCT inv.id) AS invoice_count
        FROM invoice_items ii
        JOIN invoices inv ON inv.id = ii.invoice_id
@@ -110,10 +123,10 @@ reportsRouter.get('/slow-stock', async (req, res) => {
 reportsRouter.get('/stock-limits', async (req, res) => {
   const rows = await query(
     `SELECT l.name_ar AS location_name, i.metal_type, i.carat,
-            SUM(i.quantity) AS current_qty,
+             SUM(GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0)) AS current_qty,
             COALESCE(sl.min_qty, 0) AS min_qty, sl.max_qty,
-            CASE WHEN SUM(i.quantity) < COALESCE(sl.min_qty,0) THEN 'below'
-                 WHEN sl.max_qty IS NOT NULL AND SUM(i.quantity) > sl.max_qty THEN 'above'
+             CASE WHEN SUM(GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0)) < COALESCE(sl.min_qty,0) THEN 'below'
+                  WHEN sl.max_qty IS NOT NULL AND SUM(GREATEST(i.quantity-i.reserved_qty-i.in_transit_qty,0)) > sl.max_qty THEN 'above'
                  ELSE 'ok' END AS status
        FROM items i
        JOIN locations l ON l.id = i.current_location_id
