@@ -6,6 +6,7 @@ import { Input, Label, Select } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Pagination } from '@/components/ui/pagination';
+import { ItemSearchSelect } from '@/components/ItemSearchSelect';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, confirmDialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
@@ -147,14 +148,12 @@ export default function Transfers() {
         <div className="space-y-4">
           <div>
             <Label>القطعة (المتاحة)</Label>
-            <Select value={itemId} onChange={(e) => setItemId(e.target.value)}>
-              <option value="">اختر قطعة…</option>
-              {(availableItems ?? []).map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.code} — {it.name || it.metalType} ({it.locationName}) • متاح {it.availableQty ?? 1}
-                </option>
-              ))}
-            </Select>
+            <ItemSearchSelect
+              items={availableItems ?? []}
+              value={itemId}
+              onChange={setItemId}
+              showLocation
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
