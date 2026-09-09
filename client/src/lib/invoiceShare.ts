@@ -8,6 +8,8 @@ export function invoiceText(inv: Invoice, storeName = DEFAULT_STORE_NAME): strin
     `فاتورة — ${storeName}`,
     `رقم: ${inv.invoiceNo}`,
     `التاريخ: ${new Date(inv.createdAt).toLocaleString('ar-EG-u-nu-latn')}`,
+    `العميل: ${inv.customerName ?? 'غير مسجل'}`,
+    `رقم الموبايل: ${inv.customerPhone ?? 'غير مسجل'}`,
     '',
     ...(inv.items ?? []).map(
       (it) =>

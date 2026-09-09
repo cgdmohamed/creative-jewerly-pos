@@ -1060,6 +1060,12 @@ function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName
           <span className="font-mono font-bold">{invoice.invoiceNo}</span>
           <span className="whitespace-nowrap text-xs text-slate-500">{new Date(invoice.createdAt).toLocaleString('ar-EG-u-nu-latn')}</span>
         </div>
+        <div className="mb-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 rounded-md bg-slate-50 px-3 py-2 text-xs">
+          <span className="text-slate-500">العميل:</span>
+          <span className="font-bold text-slate-900">{invoice.customerName ?? 'غير مسجل'}</span>
+          <span className="text-slate-500">رقم الموبايل:</span>
+          <span className="font-mono font-bold text-slate-900" dir="ltr">{invoice.customerPhone ?? 'غير مسجل'}</span>
+        </div>
         <table className="mb-3 w-full text-xs">
           <thead>
             <tr className="border-b text-slate-500">
@@ -1106,7 +1112,6 @@ function InvoiceModal({ invoice, storeName, onClose }: { invoice: any; storeName
           )}
         </div>
         <div className="mt-3 border-t border-dashed pt-2 text-center text-xs text-slate-500">
-          {invoice.customerName && <div className="mb-1">العميل: {invoice.customerName}</div>}
           الكاشير: {invoice.cashierName ?? employee?.fullName}
         </div>
       </div>

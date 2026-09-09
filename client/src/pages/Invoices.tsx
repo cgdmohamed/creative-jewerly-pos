@@ -257,13 +257,14 @@ function InvoiceDetail({ id, onClose }: { id: number; onClose: () => void }) {
                   {methodName(inv.paymentMethod, payMethods)}
                 </span>
               </div>
-              {inv.customerName && (
-                <div className="col-span-2">
-                  <span className="text-slate-500">العميل: </span>
-                  {inv.customerName}
-                  {inv.customerPhone && <span className="ms-2" dir="ltr">{inv.customerPhone}</span>}
-                </div>
-              )}
+              <div>
+                <span className="text-slate-500">العميل: </span>
+                <span className="font-bold">{inv.customerName ?? 'غير مسجل'}</span>
+              </div>
+              <div>
+                <span className="text-slate-500">رقم الموبايل: </span>
+                <span className="font-mono font-bold" dir="ltr">{inv.customerPhone ?? 'غير مسجل'}</span>
+              </div>
             </div>
             <Table>
               <TableHeader>

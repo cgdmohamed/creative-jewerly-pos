@@ -218,6 +218,7 @@ CREATE TABLE invoices (
   employee_id           INT NOT NULL REFERENCES employees(id),   -- cashier
   location_id           INT NOT NULL REFERENCES locations(id),
   customer_id           INT REFERENCES customers(id),
+  customer_name         TEXT,
   customer_phone        TEXT,
   metal_subtotal        NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (metal_subtotal >= 0),
   craftsmanship_total   NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (craftsmanship_total >= 0),

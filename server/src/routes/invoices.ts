@@ -13,7 +13,7 @@ const INVOICE_SELECT = `
   SELECT inv.*, e.full_name AS cashier_name, l.name_ar AS location_name,
          am.full_name AS approved_by_name, le.full_name AS returned_by_name,
          pm.name_ar AS payment_method_name, pm.color AS payment_method_color,
-         c.name AS customer_name,
+         COALESCE(inv.customer_name, c.name) AS customer_name,
          COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id=inv.id),0) AS paid_amount,
          GREATEST(inv.total-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id=inv.id),0),0) AS remaining_due
     FROM invoices inv
@@ -266,16 +266,16 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
 
   const inv = await db.queryOne<any>(
     `INSERT INTO invoices
-       (invoice_no, employee_id, location_id, customer_id, customer_phone, metal_subtotal,
+       (invoice_no, employee_id, location_id, customer_id, customer_name, customer_phone, metal_subtotal,
         craftsmanship_total, discount_amount, discount_reason, discount_approved_by,
         vat_percent, vat_amount, total, payment_method, shift_id, is_offline, device_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
              (SELECT id FROM shifts WHERE employee_id=$2 AND status='open' ORDER BY opened_at DESC LIMIT 1),
-             $15,$16)
+             $16,$17)
      RETURNING *`,
     [
       invoiceNo, employeeId, Number(b.locationId) || cashier.location_id || 1,
-      customerId, customerPhone, totals.metalSubtotal, totals.craftsmanshipTotal,
+      customerId, customer.name, customerPhone, totals.metalSubtotal, totals.craftsmanshipTotal,
       totals.discountAmount, discountReason, approvedBy, totals.vatPercent, totals.vatAmount, totals.total,
       b.paymentMethod || 'cash', !!b.isOffline, b.deviceId || null,
     ],
