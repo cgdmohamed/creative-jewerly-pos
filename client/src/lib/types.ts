@@ -201,6 +201,8 @@ export interface Reservation {
   reservedAt: string;
   quantity?: number;
   status: 'active' | 'completed' | 'cancelled';
+  invoiceId?: number | null;
+  invoiceNo?: string | null;
 }
 
 export interface Movement {

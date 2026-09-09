@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ScanLine, Trash2, Plus, Minus, Printer, X, WifiOff, Gem, CloudUpload, RotateCcw, MessageCircle, UserPlus, ShoppingCart, HandCoins, Calculator, Camera } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select } from '@/components/ui/input';
@@ -7,14 +8,14 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { useActivePrices, useItems, usePaymentMethodsActive, useSettings, useCustomers, useCategories } from '@/hooks/useData';
+import { useActivePrices, useItems, usePaymentMethodsActive, useSettings, useCustomers, useCategories, useReservations } from '@/hooks/useData';
 import { api } from '@/lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/stores/auth';
 import { useOfflineStore } from '@/stores/offline';
 import { fmtMoney, fmtNum, metalLabel, fmtDateTime, cn } from '@/lib/utils';
 import { downloadInvoicePdf, openInvoiceWhatsAppWeb } from '@/lib/invoiceShare';
-import type { CartLine, Item } from '@/lib/types';
+import type { CartLine, Item, Reservation } from '@/lib/types';
 import { storeName } from '@/lib/branding';
 import { labelCodeForItem } from '@/lib/labels';
 import { CameraScannerDialog } from '@/components/scanner/CameraScannerDialog';
@@ -22,6 +23,7 @@ import { CameraScannerDialog } from '@/components/scanner/CameraScannerDialog';
 const hasUsablePhone = (phone?: string | null) => String(phone ?? '').replace(/\D/g, '').length >= 8;
 
 export default function Pos() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { employee } = useAuth();
   const qc = useQueryClient();
   const { data: prices } = useActivePrices();
@@ -49,6 +51,10 @@ export default function Pos() {
   const [showCustomerForm, setShowCustomerForm] = useState(false);
   const [customerForm, setCustomerForm] = useState({ name: '', phone: '' });
   const [showCameraScanner, setShowCameraScanner] = useState(false);
+  const [activeReservation, setActiveReservation] = useState<Reservation | null>(null);
+  const loadedReservationId = useRef<number | null>(null);
+  const reservationId = Number(searchParams.get('reservation')) || null;
+  const { data: activeReservations } = useReservations('active');
 
   const isDiscountOverride = employee?.permissions.includes('invoice.discount_override');
   const cashierDiscountEnabled = settings?.cashier_discount_enabled !== 'false';
@@ -94,6 +100,33 @@ export default function Pos() {
     return mp != null && Number(item.weightG) > 0 ? Number(item.weightG) * mp : null;
   };
 
+  const cartLineFor = (item: Item, quantity = 1): CartLine | null => {
+    const general = isGeneral(item);
+    const unit = unitTotal(item);
+    if (unit == null) return null;
+    let unitMetal = 0;
+    let unitCraft: number;
+    if (general) {
+      unitCraft = unit;
+    } else {
+      unitMetal = Number(item.weightG) * metalPriceFor(item)!;
+      unitCraft =
+        item.craftsmanshipType === 'percent'
+          ? (unitMetal * Number(item.craftsmanshipValue)) / 100
+          : item.craftsmanshipType === 'per_gram'
+            ? Number(item.weightG) * Number(item.craftsmanshipValue)
+            : Number(item.craftsmanshipValue);
+    }
+    return {
+      item,
+      quantity,
+      metalPrice: general ? 0 : metalPriceFor(item)!,
+      metalTotal: unitMetal * quantity,
+      craft: unitCraft * quantity,
+      lineTotal: (unitMetal + unitCraft) * quantity,
+    };
+  };
+
   const availableItems = (allItems ?? []).filter(
     (i) => i.status === 'available' && (activeCategory === 'all' || i.categoryId === activeCategory),
   );
@@ -135,9 +168,13 @@ export default function Pos() {
   };
 
   const addToCart = (item: Item): boolean => {
+    if (activeReservation) {
+      toast.warning('أتمم الحجز الحالي أو ألغِ وضع التحويل قبل إضافة قطع أخرى');
+      return false;
+    }
     const general = isGeneral(item);
-    const unit = unitTotal(item);
-    if (unit == null) {
+    const line = cartLineFor(item);
+    if (!line) {
       toast.error(general
         ? 'لا يوجد سعر بيع لهذا المنتج — حدّد سعر البيع أولاً'
         : `لا يوجد سعر لليوم لهذا المعدن (${metalLabel(item.metalType || '')} عيار ${item.carat || '—'})`);
@@ -147,33 +184,68 @@ export default function Pos() {
       toast.warning('القطعة موجودة بالفعل في الفاتورة');
       return false;
     }
-    let unitMetal = 0;
-    let unitCraft: number;
-    if (general) {
-      unitCraft = unit;
-    } else {
-      unitMetal = Number(item.weightG) * metalPriceFor(item)!;
-      unitCraft =
-        item.craftsmanshipType === 'percent'
-          ? (unitMetal * Number(item.craftsmanshipValue)) / 100
-          : item.craftsmanshipType === 'per_gram'
-            ? Number(item.weightG) * Number(item.craftsmanshipValue)
-            : Number(item.craftsmanshipValue);
-    }
-    setCart((c) => [
-      ...c,
-      {
-        item, quantity: 1, metalPrice: general ? 0 : metalPriceFor(item)!,
-        metalTotal: unitMetal, craft: unitCraft, lineTotal: unitMetal + unitCraft,
-      },
-    ]);
+    setCart((c) => [...c, line]);
     setQuery('');
     setResults([]);
     searchRef.current?.focus();
     return true;
   };
 
-  const removeLine = (id: number) => setCart((c) => c.filter((l) => l.item.id !== id));
+  const clearReservationContext = () => {
+    setActiveReservation(null);
+    loadedReservationId.current = null;
+    const next = new URLSearchParams(searchParams);
+    next.delete('reservation');
+    setSearchParams(next, { replace: true });
+  };
+
+  useEffect(() => {
+    if (!reservationId || !activeReservations || !allItems || !prices || !customers) return;
+    if (loadedReservationId.current === reservationId) return;
+    const reservation = activeReservations.find((entry) => entry.id === reservationId);
+    if (!reservation) {
+      loadedReservationId.current = reservationId;
+      toast.error('الحجز غير موجود أو لم يعد نشطاً');
+      clearReservationContext();
+      return;
+    }
+    const item = allItems.find((entry) => entry.id === reservation.itemId);
+    const line = item ? cartLineFor(item, reservation.quantity ?? 1) : null;
+    if (!item || !line) {
+      loadedReservationId.current = reservationId;
+      toast.error(!item ? 'قطعة الحجز غير موجودة' : 'لا يمكن تسعير قطعة الحجز بالسعر الحالي');
+      return;
+    }
+
+    loadedReservationId.current = reservationId;
+    setActiveReservation(reservation);
+    setCart([line]);
+    setDiscountType('percent');
+    setDiscountPercent(0);
+    setDiscountValue(0);
+    setNeedApproval(false);
+    setManagerPin('');
+    setPaidAmount('');
+    const phoneDigits = String(reservation.customerPhone ?? '').replace(/\D/g, '');
+    const linkedCustomer = customers.find((customer) => customer.id === reservation.customerId)
+      ?? (phoneDigits ? customers.find((customer) => String(customer.phone ?? '').replace(/\D/g, '') === phoneDigits) : undefined);
+    if (linkedCustomer) {
+      setCustomerId(linkedCustomer.id);
+    } else {
+      setCustomerId('');
+      setCustomerForm({ name: reservation.customerName, phone: reservation.customerPhone ?? '' });
+      setShowCustomerForm(true);
+      toast.info('سجّل عميل الحجز أولاً ليتم ربط الفاتورة به');
+    }
+  }, [reservationId, activeReservations, allItems, prices, customers]);
+
+  const removeLine = (id: number) => {
+    if (activeReservation?.itemId === id) {
+      toast.warning('قطعة الحجز مطلوبة لإتمامه — ألغِ وضع إتمام الحجز أولاً');
+      return;
+    }
+    setCart((c) => c.filter((l) => l.item.id !== id));
+  };
 
   const setLineQty = (id: number, qty: number) => {
     setCart((c) =>
@@ -206,11 +278,14 @@ export default function Pos() {
   const craftTotal = roundMoney(rawCraftTotal - discount);
   const vatPercent = Number(settings?.vat_percent ?? 0);
   const vat = vatPercent > 0 ? roundMoney(((metalSubtotal + craftTotal) * vatPercent) / 100) : 0;
-  const total = roundMoney(metalSubtotal + craftTotal + vat);
+  const calculatedTotal = roundMoney(metalSubtotal + craftTotal + vat);
+  const total = activeReservation ? roundMoney(Number(activeReservation.totalValue)) : calculatedTotal;
+  const reservationDeposit = roundMoney(Number(activeReservation?.downPayment ?? 0));
+  const amountDue = roundMoney(Math.max(total - Math.min(reservationDeposit, total), 0));
 
   const paidNum = paidAmount ? Number(paidAmount) : 0;
   const hasPaid = paidAmount.trim() !== '';
-  const change = paidNum - total;
+  const change = paidNum - amountDue;
 
   const pressPaidKey = (k: string) => {
     if (k === 'C') return setPaidAmount('');
@@ -227,6 +302,10 @@ export default function Pos() {
   const capBlocked = exceedCap && !capOverrideEnabled;
 
   const checkout = async () => {
+    if (activeReservation && offline) {
+      toast.warning('إتمام الحجز يحتاج اتصالاً بالخادم لضمان احتساب العربون وتحديث المخزون');
+      return;
+    }
     const selectedCustomer = (customers ?? []).find((customer) => customer.id === customerId);
     if (!customerId) {
       setCustomerForm({ name: '', phone: '' });
@@ -246,9 +325,10 @@ export default function Pos() {
       discountValue: discountType === 'fixed' ? Number(discountValue) : 0,
       managerPin: needApproval ? managerPin : null,
       paymentMethod,
-      paidAmount: paidAmount ? Number(paidAmount) : total,
+      paidAmount: paidAmount ? Number(paidAmount) : amountDue,
       customerId: customerId || null,
       customerPhone: null,
+      reservationIds: activeReservation ? [activeReservation.id] : [],
       locationId: employee?.locationId ?? 1,
       isOffline: offline,
       deviceId: navigator.userAgent,
@@ -264,7 +344,9 @@ export default function Pos() {
       setNeedApproval(false);
       setPaidAmount('');
       setCustomerId('');
+      clearReservationContext();
       qc.invalidateQueries({ queryKey: ['items'] });
+      qc.invalidateQueries({ queryKey: ['reservations'] });
       qc.invalidateQueries({ queryKey: ['dashboard-data'] });
       qc.invalidateQueries({ queryKey: ['invoices'] });
     } catch (e: any) {
@@ -283,6 +365,10 @@ export default function Pos() {
         toast.error('إحدى القطع لم تعد متاحة — حدث خطأ في المخزون');
       } else if (String(e.message).includes('prices.missing_today')) {
         toast.error('لا يوجد سعر محدد لليوم لأحد المعادن — لا يمكن البيع');
+      } else if (String(e.message).includes('reservations.total_below_metal')) {
+        toast.error('قيمة الحجز أقل من قيمة المعدن الحالية — راجع الحجز أو السعر اليومي مع المدير');
+      } else if (String(e.message).includes('reservations.')) {
+        toast.error('تعذر إتمام الحجز لأن بياناته تغيّرت — أعد فتحه من شاشة الحجوزات');
       } else if (String(e.message).includes('customers.required')) {
         setCustomerForm({ name: '', phone: '' });
         setShowCustomerForm(true);
@@ -582,13 +668,30 @@ export default function Pos() {
               </h3>
               {cart.length > 0 && (
                 <button
-                  onClick={() => setCart([])}
+                  onClick={() => {
+                    setCart([]);
+                    if (activeReservation) clearReservationContext();
+                  }}
                   className="flex items-center gap-1 text-xs font-medium text-rose-600 hover:underline"
                 >
-                  <Trash2 className="h-3.5 w-3.5" /> تفريغ
+                  <Trash2 className="h-3.5 w-3.5" /> {activeReservation ? 'إلغاء التحويل' : 'تفريغ'}
                 </button>
               )}
             </div>
+
+            {activeReservation && (
+              <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="font-bold">إتمام الحجز #{activeReservation.id}</div>
+                    <div className="mt-0.5 text-amber-700">
+                      {activeReservation.customerName} • عربون {fmtMoney(reservationDeposit)} ج.م
+                    </div>
+                  </div>
+                  <Badge tone="bg-amber-100 text-amber-800">محجوز</Badge>
+                </div>
+              </div>
+            )}
 
             <div className="max-h-72 space-y-2 overflow-y-auto p-3">
               {cart.length === 0 ? (
@@ -614,7 +717,9 @@ export default function Pos() {
                       </div>
                       <div className="truncate font-mono text-xs text-slate-400">{l.item.code}</div>
                       <div className="mt-0.5 text-xs text-slate-500">
-                        {isGeneral(l.item) ? (
+                        {activeReservation?.itemId === l.item.id ? (
+                          <>سعر الحجز المتفق عليه</>
+                        ) : isGeneral(l.item) ? (
                           <>سعر ثابت {fmtMoney(l.craft)}</>
                         ) : (
                           <>
@@ -628,7 +733,7 @@ export default function Pos() {
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => setLineQty(l.item.id, l.quantity + 1)}
-                          disabled={l.quantity >= (l.item.availableQty ?? 1)}
+                          disabled={activeReservation?.itemId === l.item.id || l.quantity >= (l.item.availableQty ?? 1)}
                           className="flex h-7 w-7 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-40"
                         >
                           <Plus className="h-3.5 w-3.5" />
@@ -636,13 +741,15 @@ export default function Pos() {
                         <span className="w-7 text-center text-sm font-bold text-slate-900">{l.quantity}</span>
                         <button
                           onClick={() => setLineQty(l.item.id, l.quantity - 1)}
-                          disabled={l.quantity <= 1}
+                          disabled={activeReservation?.itemId === l.item.id || l.quantity <= 1}
                           className="flex h-7 w-7 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-40"
                         >
                           <Minus className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <span className="text-sm font-extrabold text-slate-900">{fmtMoney(l.lineTotal)}</span>
+                      <span className="text-sm font-extrabold text-slate-900">
+                        {fmtMoney(activeReservation?.itemId === l.item.id ? activeReservation.totalValue : l.lineTotal)}
+                      </span>
                     </div>
                   </div>
                 ))
@@ -651,45 +758,61 @@ export default function Pos() {
 
             <div className="border-t border-slate-100 bg-slate-50/60 p-4">
               <div className="space-y-1.5 rounded-xl bg-white p-3 text-sm ring-1 ring-slate-100">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">قيمة المعدن</span>
-                  <span className="font-medium text-slate-900">{fmtMoney(metalSubtotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">المصنعية / سعر المنتجات</span>
-                  <span className="font-medium text-slate-900">{fmtMoney(rawCraftTotal)}</span>
-                </div>
-                {discount > 0 && (
-                  <div className="flex justify-between text-rose-600">
-                    <span>الخصم ({discountType === 'fixed' ? fmtMoney(Number(discountValue)) : discountPercent + '%'})</span>
-                    <span>-{fmtMoney(discount)}</span>
-                  </div>
-                )}
-                {vat > 0 && (
-                  <div className="flex justify-between text-slate-500">
-                    <span>ضريبة القيمة المضافة ({vatPercent}%)</span>
-                    <span className="font-medium">{fmtMoney(vat)}</span>
-                  </div>
+                {!activeReservation && (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">قيمة المعدن</span>
+                      <span className="font-medium text-slate-900">{fmtMoney(metalSubtotal)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">المصنعية / سعر المنتجات</span>
+                      <span className="font-medium text-slate-900">{fmtMoney(rawCraftTotal)}</span>
+                    </div>
+                    {discount > 0 && (
+                      <div className="flex justify-between text-rose-600">
+                        <span>الخصم ({discountType === 'fixed' ? fmtMoney(Number(discountValue)) : discountPercent + '%'})</span>
+                        <span>-{fmtMoney(discount)}</span>
+                      </div>
+                    )}
+                    {vat > 0 && (
+                      <div className="flex justify-between text-slate-500">
+                        <span>ضريبة القيمة المضافة ({vatPercent}%)</span>
+                        <span className="font-medium">{fmtMoney(vat)}</span>
+                      </div>
+                    )}
+                  </>
                 )}
                 <div className="flex items-end justify-between border-t border-dashed border-slate-200 pt-2">
-                  <span className="text-sm font-bold text-slate-900">الإجمالي</span>
+                  <span className="text-sm font-bold text-slate-900">{activeReservation ? 'القيمة المتفق عليها' : 'الإجمالي'}</span>
                   <span className="text-xl font-extrabold leading-none text-brand-700">
                     {fmtMoney(total)}
                     <span className="text-sm"> ج.م</span>
                   </span>
                 </div>
+                {activeReservation && (
+                  <>
+                    <div className="flex justify-between border-t border-dashed border-slate-200 pt-2 text-emerald-700">
+                      <span>عربون مسدد سابقاً</span>
+                      <span className="font-bold">-{fmtMoney(Math.min(reservationDeposit, total))}</span>
+                    </div>
+                    <div className="flex justify-between font-bold text-amber-800">
+                      <span>المطلوب الآن</span>
+                      <span>{fmtMoney(amountDue)} ج.م</span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
             <div className="space-y-3 border-t border-slate-100 p-4">
 
-                {!isDiscountOverride && !cashierDiscountEnabled && (
+                {!activeReservation && !isDiscountOverride && !cashierDiscountEnabled && (
                   <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                     الخصم معطّل للكاشير من الإعدادات
                   </div>
                 )}
 
-                {(isDiscountOverride || cashierDiscountEnabled) && (
+                {!activeReservation && (isDiscountOverride || cashierDiscountEnabled) && (
                   <div className="space-y-2 rounded-lg border border-slate-200 p-3">
                     <div className="flex items-center justify-between">
                       <Label>الخصم على المصنعية</Label>
@@ -816,7 +939,7 @@ export default function Pos() {
                       {cart.length > 0 && (
                         <button
                           type="button"
-                          onClick={() => setPaidAmount(String(total))}
+                          onClick={() => setPaidAmount(String(amountDue))}
                           className="text-[11px] font-bold text-brand-600 hover:underline"
                         >
                           المبلغ كامل
@@ -883,7 +1006,8 @@ export default function Pos() {
                   disabled={cart.length === 0 || capBlocked}
                   onClick={checkout}
                 >
-                  <HandCoins className="h-4 w-4" /> إتمام البيع — {fmtMoney(total)} ج.م
+                  <HandCoins className="h-4 w-4" />
+                  {activeReservation ? `إتمام الحجز — تحصيل ${fmtMoney(amountDue)} ج.م` : `إتمام البيع — ${fmtMoney(total)} ج.م`}
                 </Button>
               </div>
           </Card>

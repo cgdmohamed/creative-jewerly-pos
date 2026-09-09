@@ -48,6 +48,35 @@ export function calculateInvoiceTotals(input: {
   return { metalSubtotal, rawCraftsmanship, craftsmanshipTotal, discountAmount, vatPercent, vatAmount, total };
 }
 
+export function calculateLockedInvoiceTotals(
+  metalSubtotalInput: number,
+  targetTotalInput: number,
+  vatPercentInput: number,
+) {
+  const metalSubtotal = roundMoney(metalSubtotalInput);
+  const targetTotal = roundMoney(targetTotalInput);
+  const vatPercent = Number(vatPercentInput);
+  if (metalSubtotal < 0 || targetTotal < 0 || !Number.isFinite(vatPercent) || vatPercent < 0 || vatPercent > 100) {
+    throw new Error('bad.reservation_total');
+  }
+
+  const preTaxTarget = roundMoney(targetTotal / (1 + vatPercent / 100));
+  const craftsmanshipTotal = roundMoney(preTaxTarget - metalSubtotal);
+  if (craftsmanshipTotal < 0) throw new Error('reservations.total_below_metal');
+  const vatAmount = roundMoney(targetTotal - metalSubtotal - craftsmanshipTotal);
+  if (vatAmount < 0) throw new Error('bad.reservation_total');
+
+  return {
+    metalSubtotal,
+    rawCraftsmanship: craftsmanshipTotal,
+    craftsmanshipTotal,
+    discountAmount: 0,
+    vatPercent,
+    vatAmount,
+    total: targetTotal,
+  };
+}
+
 export function allocateDiscount(craftTotals: number[], discountAmount: number): number[] {
   const craftCents = craftTotals.map((value) => Math.round(roundMoney(value) * 100));
   const discountCents = Math.round(roundMoney(discountAmount) * 100);

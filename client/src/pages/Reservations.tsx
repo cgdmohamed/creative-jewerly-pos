@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Plus, X } from 'lucide-react';
+import { Plus, ReceiptText, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select } from '@/components/ui/input';
@@ -19,6 +20,7 @@ import { fmtDateTime, fmtMoney, STATUS_BADGE } from '@/lib/utils';
 import { can } from '@/stores/auth';
 
 export default function Reservations() {
+  const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState('active');
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ itemId: '', customerId: '', customerName: '', customerPhone: '', downPayment: '', totalValue: '', quantity: '1' });
@@ -139,19 +141,31 @@ export default function Reservations() {
                     <Badge tone={STATUS_BADGE[r.status]}>
                       {r.status === 'active' ? 'نشط' : r.status === 'completed' ? 'مكتمل' : 'ملغي'}
                     </Badge>
+                    {r.invoiceNo && <div className="mt-1 font-mono text-[10px] text-slate-400">{r.invoiceNo}</div>}
                   </TableCell>
                   <TableCell className="text-end">
                     {r.status === 'active' && can('reservation.manage') && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-rose-600"
-                        onClick={async () => {
-                          if (await confirmDialog('إلغاء الحجز؟ ستعود القطعة للمخزون متاحة.')) cancelRes.mutate(r.id);
-                        }}
-                      >
-                        <X className="h-3.5 w-3.5" /> إلغاء
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        {can('invoice.create') && (
+                          <Button
+                            variant="brand"
+                            size="sm"
+                            onClick={() => navigate(`/pos?reservation=${r.id}`)}
+                          >
+                            <ReceiptText className="h-3.5 w-3.5" /> إتمام البيع
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-rose-600"
+                          onClick={async () => {
+                            if (await confirmDialog('إلغاء الحجز؟ ستعود القطعة للمخزون متاحة.')) cancelRes.mutate(r.id);
+                          }}
+                        >
+                          <X className="h-3.5 w-3.5" /> إلغاء
+                        </Button>
+                      </div>
                     )}
                   </TableCell>
                 </TableRow>

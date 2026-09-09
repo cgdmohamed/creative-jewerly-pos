@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
-import { allocateDiscount, calculateInvoiceTotals, computeUnitCraftsmanship, normalizePayment, roundMoney } from '../accounting.js';
+import { allocateDiscount, calculateInvoiceTotals, calculateLockedInvoiceTotals, computeUnitCraftsmanship, normalizePayment, roundMoney } from '../accounting.js';
 import { authenticate, requirePermission } from '../middleware/auth.js';
 import { query, queryOne, tx, Queryable, pool } from '../db.js';
 import { camelize, camelizeRows, audit, deriveStatus, todayLocal } from '../utils.js';
@@ -92,11 +92,16 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
   const reservations = reservationIds.length
     ? await db.query<any>(
       `SELECT * FROM reservations
-        WHERE id = ANY($1::int[]) AND customer_id=$2 AND status='active'
+        WHERE id = ANY($1::int[]) AND (customer_id=$2 OR customer_id IS NULL) AND status='active'
         ORDER BY id FOR UPDATE`,
       [reservationIds, customerId])
     : [];
   if (reservations.length !== reservationIds.length) throw httpError(409, 'reservations.invalid');
+  for (const reservation of reservations) {
+    if (reservation.customer_id == null) {
+      await db.query(`UPDATE reservations SET customer_id=$1 WHERE id=$2`, [customerId, reservation.id]);
+    }
+  }
   const reservedForSale = new Map<number, number>();
   for (const reservation of reservations) {
     const itemId = Number(reservation.item_id);
@@ -104,6 +109,12 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
   }
   for (const itemId of reservedForSale.keys()) {
     if (!combinedItems.has(itemId)) throw httpError(409, 'reservations.item_mismatch');
+  }
+  if (reservations.length) {
+    if (combinedItems.size !== reservedForSale.size) throw httpError(409, 'reservations.items_only');
+    for (const [itemId, quantity] of combinedItems) {
+      if (reservedForSale.get(itemId) !== quantity) throw httpError(409, 'reservations.quantity_mismatch');
+    }
   }
 
   const today = todayLocal();
@@ -159,7 +170,7 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
   }
 
   const metalSubtotalRaw = lines.reduce((s, l) => s + l.metalTotal, 0);
-  const craftsmanshipSubtotalRaw = lines.reduce((s, l) => s + l.craft, 0);
+  let craftsmanshipSubtotalRaw = lines.reduce((s, l) => s + l.craft, 0);
 
   // Discount: percentage OR fixed amount, applied against craftsmanship only.
   // Cashier role can be blocked entirely (cashier_discount_enabled) and the
@@ -171,6 +182,7 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
   const discountPercent = Number(b.discountPercent ?? 0);
   const discountValue = Number(b.discountValue ?? 0);
   const wantsDiscount = discountType === 'fixed' ? discountValue > 0 : discountPercent > 0;
+  if (reservations.length && wantsDiscount) throw httpError(409, 'reservations.price_locked');
   if (wantsDiscount) {
     const getSetting = async (key: string) =>
       (await db.queryOne<any>(`SELECT value FROM app_settings WHERE key = $1`, [key]))?.value;
@@ -207,13 +219,36 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
     `SELECT value FROM app_settings WHERE key = 'vat_percent'`))?.value ?? 0);
   let totals;
   try {
-    totals = calculateInvoiceTotals({
-      metalSubtotal: metalSubtotalRaw,
-      craftsmanshipSubtotal: craftsmanshipSubtotalRaw,
-      discountType,
-      discountValue: discountType === 'fixed' ? discountValue : discountPercent,
-      vatPercent,
-    });
+    if (reservations.length) {
+      const agreedTotal = roundMoney(reservations.reduce(
+        (sum, reservation) => sum + Number(reservation.total_value || 0), 0));
+      totals = calculateLockedInvoiceTotals(metalSubtotalRaw, agreedTotal, vatPercent);
+      craftsmanshipSubtotalRaw = totals.rawCraftsmanship;
+
+      const targetCents = Math.round(craftsmanshipSubtotalRaw * 100);
+      const reservationTotals = new Map<number, number>();
+      for (const reservation of reservations) {
+        const itemId = Number(reservation.item_id);
+        reservationTotals.set(itemId, (reservationTotals.get(itemId) ?? 0) + Number(reservation.total_value));
+      }
+      const weightTotal = [...reservationTotals.values()].reduce((sum, value) => sum + value, 0) || 1;
+      let allocatedCents = 0;
+      lines.forEach((line, index) => {
+        const cents = index === lines.length - 1
+          ? targetCents - allocatedCents
+          : Math.floor(targetCents * (reservationTotals.get(Number(line.item.id)) ?? 0) / weightTotal);
+        allocatedCents += cents;
+        line.craft = cents / 100;
+      });
+    } else {
+      totals = calculateInvoiceTotals({
+        metalSubtotal: metalSubtotalRaw,
+        craftsmanshipSubtotal: craftsmanshipSubtotalRaw,
+        discountType,
+        discountValue: discountType === 'fixed' ? discountValue : discountPercent,
+        vatPercent,
+      });
+    }
   } catch (error: any) {
     throw httpError(400, error?.message || 'bad.accounting');
   }

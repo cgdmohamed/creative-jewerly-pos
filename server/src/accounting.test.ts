@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allocateDiscount, calculateInvoiceTotals, computeUnitCraftsmanship, normalizePayment, roundMoney } from './accounting.js';
+import { allocateDiscount, calculateInvoiceTotals, calculateLockedInvoiceTotals, computeUnitCraftsmanship, normalizePayment, roundMoney } from './accounting.js';
 
 test('workmanship methods remain independent for low-making bullion', () => {
   assert.equal(roundMoney(computeUnitCraftsmanship('per_gram', 12, 31.1, 250_000)), 373.2);
@@ -47,6 +47,28 @@ test('cash tender records net collection and separates change', () => {
   assert.deepEqual(normalizePayment(40, 100), { collected: 40, change: 0, outstanding: 60 });
   assert.deepEqual(normalizePayment(undefined, 100), { collected: 100, change: 0, outstanding: 0 });
   assert.throws(() => normalizePayment(-1, 100), /bad.payment/);
+});
+
+test('reservation conversion preserves the agreed total and deposit balance', () => {
+  const result = calculateLockedInvoiceTotals(101, 600, 0);
+  assert.deepEqual(result, {
+    metalSubtotal: 101,
+    rawCraftsmanship: 499,
+    craftsmanshipTotal: 499,
+    discountAmount: 0,
+    vatPercent: 0,
+    vatAmount: 0,
+    total: 600,
+  });
+  assert.deepEqual(normalizePayment(450, result.total - 150), {
+    collected: 450,
+    change: 0,
+    outstanding: 0,
+  });
+});
+
+test('reservation total cannot be lower than its metal value', () => {
+  assert.throws(() => calculateLockedInvoiceTotals(601, 600, 0), /reservations.total_below_metal/);
 });
 
 test('quantity arithmetic retains cents for large batches', () => {

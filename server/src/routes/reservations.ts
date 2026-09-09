@@ -11,10 +11,11 @@ reservationsRouter.get('/', async (req, res) => {
   const { status } = req.query;
   const rows = await query(
     `SELECT r.*, i.code AS item_code, i.name AS item_name, i.weight_g, i.metal_type, i.carat,
-            e.full_name AS reserved_by_name
+            e.full_name AS reserved_by_name, inv.invoice_no
        FROM reservations r
        JOIN items i ON i.id = r.item_id
        LEFT JOIN employees e ON e.id = r.reserved_by
+       LEFT JOIN invoices inv ON inv.id = r.invoice_id
        ${status ? 'WHERE r.status = $1' : ''}
       ORDER BY r.reserved_at DESC LIMIT 300`,
     status ? [String(status)] : [],
