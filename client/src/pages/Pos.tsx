@@ -8,7 +8,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { useActivePrices, useItems, usePaymentMethodsActive, useSettings, useCustomers, useCategories, useReservations } from '@/hooks/useData';
+import { useActivePrices, useItems, usePaymentMethodsActive, useSettings, useCustomers, useCategories, useReservations, useCurrentShift } from '@/hooks/useData';
 import { api } from '@/lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/stores/auth';
@@ -55,6 +55,7 @@ export default function Pos() {
   const loadedReservationId = useRef<number | null>(null);
   const reservationId = Number(searchParams.get('reservation')) || null;
   const { data: activeReservations } = useReservations('active');
+  const { data: currentShift } = useCurrentShift();
 
   const isDiscountOverride = employee?.permissions.includes('invoice.discount_override');
   const cashierDiscountEnabled = settings?.cashier_discount_enabled !== 'false';
@@ -302,6 +303,10 @@ export default function Pos() {
   const capBlocked = exceedCap && !capOverrideEnabled;
 
   const checkout = async () => {
+    if (!currentShift) {
+      toast.warning('يجب فتح شيفت من قسم الشيفتات قبل إتمام أي بيع');
+      return;
+    }
     if (activeReservation && offline) {
       toast.warning('إتمام الحجز يحتاج اتصالاً بالخادم لضمان احتساب العربون وتحديث المخزون');
       return;
@@ -354,6 +359,9 @@ export default function Pos() {
         pushPending('invoice.create', payload);
         toast.info('تم حفظ الفاتورة محليًا — ستُرسل عند عودة الاتصال');
         setCart([]);
+      } else if (String(e.message).includes('shifts.open_required')) {
+        toast.warning('يجب فتح شيفت من قسم الشيفتات قبل إتمام أي بيع');
+        qc.invalidateQueries({ queryKey: ['shift-current'] });
       } else if (String(e.message).includes('discount.requires_manager')) {
         setNeedApproval(true);
         toast.warning('تجاوز سقف الخصم — مطلوب موافقة المدير (PIN)');

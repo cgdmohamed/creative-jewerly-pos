@@ -108,6 +108,7 @@ export interface AppSettings {
   label_printer_name?: string;
   label_offset_x_mm?: string;
   label_offset_y_mm?: string;
+  label_gap_y_mm?: string;
 }
 
 export interface Customer {
@@ -229,13 +230,13 @@ export interface StockCount {
   locationName?: string;
   startedByName?: string;
   startedAt: string;
-  status: 'in_progress' | 'completed' | 'cancelled';
+  status: 'in_progress' | 'completed' | 'applied' | 'cancelled';
   expected?: CountItem[];
   extra?: CountItem[];
 }
 
 export interface CountItem extends Item {
-  countedStatus: 'found' | 'missing' | 'unexpected';
+  countedStatus: 'unscanned' | 'found' | 'missing' | 'unexpected';
   expectedQty?: number;
   countedQty?: number | null;
   diffQty?: number;

@@ -26,6 +26,7 @@ export interface LabelOptions {
   printerName: string;
   offsetX: number;
   offsetY: number;
+  gapY: number;
 }
 
 export const LABEL_TEMPLATES: LabelTemplate[] = [
@@ -42,6 +43,8 @@ export const LABEL_TEMPLATES: LabelTemplate[] = [
 
 const TEMPLATE_IDS = new Set(LABEL_TEMPLATES.map((template) => template.id));
 const DEFAULT_LOGO = '/brand/black_logo.svg';
+const LABEL_SAFE_Y = 4;
+const LABEL_SAFE_HEIGHT = 96;
 
 export const LABEL_SAMPLE_ITEM = {
   id: 248,
@@ -73,7 +76,13 @@ export function labelOptionsFromSettings(settings?: AppSettings): LabelOptions {
     printerName: settings?.label_printer_name?.trim() || 'LV-1300',
     offsetX: finiteSetting(settings?.label_offset_x_mm),
     offsetY: finiteSetting(settings?.label_offset_y_mm),
+    gapY: finiteGap(settings?.label_gap_y_mm),
   };
+}
+
+function finiteGap(value?: string): number {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? Math.min(5, Math.max(0, number)) : 0;
 }
 
 function finiteSetting(value?: string): number {
@@ -134,11 +143,11 @@ function compactCode(item: Item): string {
 function productLines(item: Item, right = 463, metal = true): string {
   const center = 360 + (right - 360) / 2;
   const code = compactCode(item);
-  const codeSize = code.length > 10 ? 13 : 17;
+  const codeSize = code.length > 10 ? 14 : 18;
   return [
-    text(code, center, 27, codeSize, { bold: true }),
-    text(weightLine(item), center, 58, 15),
-    metal ? text(metalLine(item), center, 87, 15) : '',
+    text(code, center, 28, codeSize, { bold: true }),
+    text(weightLine(item), center, 55, 16),
+    metal ? text(metalLine(item), center, 84, 16) : '',
   ].join('');
 }
 
@@ -215,12 +224,14 @@ export async function buildLabelSvg(item: Item, options: LabelOptions): Promise<
     const dy = options.offsetY * 8;
     return `<svg xmlns="http://www.w3.org/2000/svg" width="70mm" height="13mm" viewBox="0 0 560 104" role="img" aria-label="${xml(`ملصق ${item.code}`)}">
       <rect width="560" height="104" fill="#fff"/>
-      <g transform="translate(${dx} ${dy})" fill="#000">
-        <image href="${image}" x="56" y="1" width="87" height="87"/>
-        ${text(labelCode, 100, 101, 10)}
-        ${text(brand, 460, 25, brand.length > 14 ? 15 : 18, { bold: true })}
-        ${text(compactCode(item), 460, 56, compactCode(item).length > 10 ? 13 : 15)}
-        ${text(details, 460, 86, details.length > 16 ? 13 : 16, { bold: true })}
+      <defs><clipPath id="label-safe-area"><rect x="0" y="${LABEL_SAFE_Y}" width="560" height="${LABEL_SAFE_HEIGHT}"/></clipPath></defs>
+      <g clip-path="url(#label-safe-area)">
+        <g transform="translate(${dx} ${dy})" fill="#000">
+          <image href="${image}" x="56" y="8" width="87" height="87"/>
+          ${text(brand, 460, 28, brand.length > 14 ? 17 : 20, { bold: true })}
+          ${text(compactCode(item), 460, 55, compactCode(item).length > 10 ? 14 : 16)}
+          ${text(details, 460, 84, details.length > 16 ? 14 : 18, { bold: true })}
+        </g>
       </g>
     </svg>`;
   }
@@ -235,9 +246,12 @@ export async function buildLabelSvg(item: Item, options: LabelOptions): Promise<
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="70mm" height="13mm" viewBox="0 0 560 104" role="img" aria-label="${xml(`ملصق ${item.code}`)}">
     <rect width="560" height="104" fill="#fff"/>
-    <g transform="translate(${dx} ${dy})" fill="#000">
-      ${leftTemplate(options.template, options)}
-      ${right}
+    <defs><clipPath id="label-safe-area"><rect x="0" y="${LABEL_SAFE_Y}" width="560" height="${LABEL_SAFE_HEIGHT}"/></clipPath></defs>
+    <g clip-path="url(#label-safe-area)">
+      <g transform="translate(${dx} ${dy})" fill="#000">
+        ${leftTemplate(options.template, options)}
+        ${right}
+      </g>
     </g>
   </svg>`;
 }
@@ -256,6 +270,7 @@ export async function printJewelryLabels(
   try {
     const pages: string[] = [];
     const count = Math.max(1, Math.min(50, Math.round(copies)));
+    const pitch = 13 + options.gapY;
     for (const item of items) {
       const svg = await buildLabelSvg(item, options);
       for (let copy = 0; copy < count; copy += 1) pages.push(svg);
@@ -263,19 +278,52 @@ export async function printJewelryLabels(
 
     popup.document.open();
     popup.document.write(`<!doctype html>
-      <html><head><base href="${xml(`${window.location.origin}/`)}"><title>ملصقات المنتجات</title>
+      <html lang="en" dir="ltr"><head><base href="${xml(`${window.location.origin}/`)}"><title>ملصقات المنتجات</title>
       <style>
         * { box-sizing: border-box; }
-        html, body { margin: 0; padding: 0; background: #fff; }
-        .label-page { width: 70mm; height: 13mm; overflow: hidden; break-after: page; page-break-after: always; }
+        html, body {
+          width: 70mm;
+          min-width: 70mm;
+          margin: 0 !important;
+          padding: 0 !important;
+          direction: ltr;
+          background: #fff;
+          print-color-adjust: exact;
+          -webkit-print-color-adjust: exact;
+        }
+        .label-page {
+          position: relative;
+          width: 70mm;
+          min-width: 70mm;
+          max-width: 70mm;
+          height: ${pitch}mm;
+          min-height: ${pitch}mm;
+          max-height: ${pitch}mm;
+          margin: 0 !important;
+          padding: 0 !important;
+          overflow: hidden;
+          break-after: page;
+          page-break-after: always;
+        }
         .label-page:last-child { break-after: auto; page-break-after: auto; }
-        .label-page svg { display: block; width: 70mm; height: 13mm; }
-        @page { size: 70mm 13mm; margin: 0; }
+        .label-page svg {
+          position: absolute;
+          inset: 0 auto auto 0;
+          display: block;
+          width: 70mm;
+          height: 13mm;
+          margin: 0;
+          padding: 0;
+        }
+        @page { size: 70mm ${pitch}mm; margin: 0mm; }
         @media screen {
           body { padding: 16px; background: #e5e7eb; }
           .label-page { margin: 0 auto 12px; box-shadow: 0 1px 5px #64748b; }
         }
-        @media print { .label-page { margin: 0; } }
+        @media print {
+          html, body { width: 70mm !important; }
+          .label-page { left: 0; top: 0; }
+        }
       </style></head><body>${pages.map((page) => `<div class="label-page">${page}</div>`).join('')}
       <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),350));window.addEventListener('afterprint',()=>window.close());</script>
       </body></html>`);

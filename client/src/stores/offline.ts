@@ -126,9 +126,10 @@ export const useOfflineStore = create<OfflineState>((set, get) => ({
           failed.push({ ...p, error: r.error || 'sync.failed', status: r.status === 'conflict' ? 'conflict' : 'rejected' });
         }
       }
-      const appliedSet = new Set(applied);
-      const remaining = pending.filter((p) => !appliedSet.has(p.id));
-      const failures = [...get().failures, ...failed];
+      const handledSet = new Set(results.results.map((r) => r.opId));
+      const remaining = pending.filter((p) => !handledSet.has(p.id));
+      const failedIds = new Set(failed.map((f) => f.id));
+      const failures = [...get().failures.filter((f) => !failedIds.has(f.id)), ...failed];
       const report: SyncReport = { syncedAt: new Date().toISOString(), applied: applied.length, failed: failed.length };
       const ts = report.syncedAt;
       touchLastSync(ts);

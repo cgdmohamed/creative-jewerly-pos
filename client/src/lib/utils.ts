@@ -76,6 +76,8 @@ export const STATUS_BADGE: Record<string, string> = {
   open: 'bg-emerald-100 text-emerald-800',
   closed: 'bg-slate-200 text-slate-700',
   in_progress: 'bg-sky-100 text-sky-800',
+  applied: 'bg-emerald-100 text-emerald-800',
+  unscanned: 'bg-amber-100 text-amber-800',
   received: 'bg-emerald-100 text-emerald-800',
   found: 'bg-emerald-100 text-emerald-800',
   missing: 'bg-rose-100 text-rose-800',

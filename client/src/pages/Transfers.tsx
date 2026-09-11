@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeftRight, CheckCircle2 } from 'lucide-react';
+import { ArrowLeftRight, CheckCircle2, XCircle } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select } from '@/components/ui/input';
@@ -58,6 +58,13 @@ export default function Transfers() {
     onError: (e: any) => toast.error('خطأ: ' + e.message),
   });
 
+  const cancelMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason: string }) =>
+      api(`/api/movements/${id}/cancel`, { method: 'POST', body: { reason } }),
+    onSuccess: () => { toast.success('تم إلغاء النقل وإعادة الكمية للمخزون المتاح'); invalidate(); },
+    onError: (e: any) => toast.error('خطأ: ' + e.message),
+  });
+
   const list = (movements ?? []).filter((m) => (filterStatus ? m.status === filterStatus : true));
   const pag = usePagination(list, 10, filterStatus);
 
@@ -83,6 +90,7 @@ export default function Transfers() {
               <option value="">الكل</option>
               <option value="in_transit">تحت النقل</option>
               <option value="received">مستلمة</option>
+              <option value="cancelled">ملغاة</option>
             </Select>
           </div>
         </CardContent>
@@ -116,11 +124,11 @@ export default function Transfers() {
                   <TableCell className="text-xs">{m.receivedByName ?? '—'}</TableCell>
                   <TableCell className="text-xs">{fmtDateTime(m.movedAt)}</TableCell>
                   <TableCell>
-                    <Badge tone={STATUS_BADGE[m.status]}>{m.status === 'in_transit' ? 'تحت النقل' : 'مستلمة'}</Badge>
+                    <Badge tone={STATUS_BADGE[m.status]}>{m.status === 'in_transit' ? 'تحت النقل' : m.status === 'received' ? 'مستلمة' : 'ملغاة'}</Badge>
                   </TableCell>
                   <TableCell className="text-end">
                     {m.status === 'in_transit' && can('movement.receive') && (
-                      <Button
+                      <div className="flex justify-end gap-1"><Button
                         size="sm"
                         variant="brand"
                         onClick={async () => {
@@ -131,6 +139,10 @@ export default function Transfers() {
                       >
                         <CheckCircle2 className="h-3.5 w-3.5" /> تأكيد الاستلام
                       </Button>
+                      {can('movement.create') && <Button size="sm" variant="ghost" className="text-rose-600" onClick={async () => {
+                        const reason = window.prompt('سبب إلغاء النقل:')?.trim();
+                        if (reason) cancelMutation.mutate({ id: m.id, reason });
+                      }}><XCircle className="h-3.5 w-3.5" /> إلغاء</Button>}</div>
                     )}
                   </TableCell>
                 </TableRow>

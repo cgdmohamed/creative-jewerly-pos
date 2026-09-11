@@ -37,8 +37,6 @@ export default function Items() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Item | null>(null);
   const [auditItem, setAuditItem] = useState<Item | null>(null);
-  const [statusItem, setStatusItem] = useState<Item | null>(null);
-  const [statusValue, setStatusValue] = useState('reserved');
   const [deleteItem, setDeleteItem] = useState<Item | null>(null);
   const [catsOpen, setCatsOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -82,16 +80,6 @@ export default function Items() {
       invalidate();
     },
     onError: (e: any) => toast.error('خطأ: ' + (e.message || '')),
-  });
-
-  const statusMutation = useMutation({
-    mutationFn: (body: any) => api(`/api/items/${statusItem!.id}/status`, { method: 'POST', body }),
-    onSuccess: () => {
-      toast.success('تم تغيير الحالة');
-      setStatusItem(null);
-      invalidate();
-    },
-    onError: (e: any) => toast.error('خطأ: ' + e.message),
   });
 
   const archiveMutation = useMutation({
@@ -319,13 +307,6 @@ export default function Items() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => { setStatusItem(it); setStatusValue('reserved'); }}
-                          >
-                            حالة
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
                             title={it.isActive ? 'أرشفة' : 'استرجاع'}
                             onClick={() => archiveMutation.mutate({ id: it.id, active: !it.isActive })}
                           >
@@ -373,34 +354,6 @@ export default function Items() {
       {auditItem && <AuditDialog item={auditItem} onClose={() => setAuditItem(null)} />}
 
       <CategoriesDialog open={catsOpen} onClose={() => setCatsOpen(false)} />
-
-      <Dialog
-        open={!!statusItem}
-        onClose={() => setStatusItem(null)}
-        title={`تغيير حالة: ${statusItem?.code}`}
-        description="سيُسجَّل التغيير في سجل القطعة مع السبب"
-      >
-        <div className="space-y-3">
-          <div>
-            <Label>الحالة الجديدة</Label>
-            <Select value={statusValue} onChange={(e) => setStatusValue(e.target.value)}>
-              {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
-              ))}
-            </Select>
-          </div>
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="outline" onClick={() => setStatusItem(null)}>إلغاء</Button>
-          <Button
-            variant="brand"
-            disabled={statusMutation.isPending}
-            onClick={() => statusMutation.mutate({ status: statusValue })}
-          >
-            تأكيد
-          </Button>
-        </div>
-      </Dialog>
 
       <Dialog
         open={!!deleteItem}
@@ -548,7 +501,7 @@ function ItemForm({ open, editing, onClose, onSubmit, locations, categories, set
               <Input value={form.size} onChange={(e) => set('size', e.target.value)} />
             </Field>
             <Field label="الفرع">
-              <Select value={form.currentLocationId ?? ''} onChange={(e) => set('currentLocationId', Number(e.target.value) || null)}>
+              <Select disabled={!!editing} value={form.currentLocationId ?? ''} onChange={(e) => set('currentLocationId', Number(e.target.value) || null)}>
                 <option value="">—</option>
                 {locations.map((l: any) => <option key={l.id} value={l.id}>{l.nameAr}</option>)}
               </Select>

@@ -221,6 +221,10 @@ itemsRouter.put('/:id', requirePermission('inventory.manage'), async (req, res) 
   const old = await queryOne<any>(`SELECT * FROM items WHERE id = $1`, [id]);
   if (!old) return res.status(404).json({ error: 'notfound' });
   const b = req.body ?? {};
+  const requestedLocation = b.locationId ?? b.currentLocationId;
+  if (requestedLocation != null && Number(requestedLocation) !== Number(old.current_location_id)) {
+    return res.status(409).json({ error: 'items.location_requires_transfer' });
+  }
   if (b.craftsmanshipType != null && !['fixed', 'percent', 'per_gram'].includes(b.craftsmanshipType)) {
     return res.status(400).json({ error: 'bad.craftsmanshipType' });
   }
@@ -245,7 +249,7 @@ itemsRouter.put('/:id', requirePermission('inventory.manage'), async (req, res) 
   }
 
   const updated = await tx(async (q) => {
-    const locationId = b.locationId ?? b.currentLocationId ?? null;
+    const locationId = null;
     const minQty = b.minQty != null ? Math.max(0, Math.round(Number(b.minQty))) : null;
     const maxQty = b.maxQty != null ? Math.max(minQty ?? 0, Math.round(Number(b.maxQty))) : null;
     const r = await q.queryOne<any>(
@@ -278,6 +282,12 @@ itemsRouter.put('/:id', requirePermission('inventory.manage'), async (req, res) 
 
     if (b.quantity != null) {
       const quantity = Number(b.quantity);
+      if (!Number.isInteger(quantity) || quantity < 0) {
+        throw Object.assign(new Error('bad.quantity'), { status: 400 });
+      }
+      if ((Number(old.reserved_qty) > 0 || Number(old.in_transit_qty) > 0) && quantity !== Number(old.quantity)) {
+        throw Object.assign(new Error('items.quantity_locked'), { status: 409 });
+      }
       const status = deriveStatus(quantity, Number(old.reserved_qty ?? 0), Number(old.in_transit_qty ?? 0));
       await q.query(
         `UPDATE items SET quantity = $1, status = $2, updated_at = now() WHERE id = $3`,
@@ -310,6 +320,9 @@ itemsRouter.post('/:id/archive', requirePermission('inventory.manage'), async (r
   const active = (req.body ?? {}).active !== false;
   const old = await queryOne<any>(`SELECT * FROM items WHERE id = $1`, [id]);
   if (!old) return res.status(404).json({ error: 'notfound' });
+  if (!active && (Number(old.reserved_qty) > 0 || Number(old.in_transit_qty) > 0)) {
+    return res.status(409).json({ error: 'items.has_open_allocations' });
+  }
 
   const r = await tx(async (q) => {
     const updated = await q.queryOne<any>(
@@ -354,23 +367,8 @@ itemsRouter.delete('/:id', requirePermission('inventory.manage'), async (req, re
   res.json({ ok: true });
 });
 
-// Change item status with audit reason (e.g. reserved/sold/available)
+// State is derived from stock, reservations and transfers. Direct changes would
+// create records that have no operation capable of completing or cancelling them.
 itemsRouter.post('/:id/status', requirePermission('inventory.manage'), async (req, res) => {
-  const id = Number(req.params.id);
-  const { status, reason } = req.body ?? {};
-  const allowed = ['available', 'reserved', 'sold', 'in_transit'];
-  if (!allowed.includes(status)) return res.status(400).json({ error: 'bad.status' });
-  const item = await queryOne<any>(`SELECT status FROM items WHERE id = $1`, [id]);
-  if (!item) return res.status(404).json({ error: 'notfound' });
-  if (item.status === status) return res.json({ ok: true });
-
-  await tx(async (q) => {
-    await q.query(`UPDATE items SET status = $1, updated_at = now() WHERE id = $2`, [status, id]);
-    await q.query(
-      `INSERT INTO item_status_history (item_id, from_status, to_status, reason, changed_by)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [id, item.status, status, reason || null, req.employee!.id]);
-    await audit(q, 'items', id, 'status_change', req.employee!.id, item, { status, reason });
-  });
-  res.json({ ok: true });
+  res.status(409).json({ error: 'items.status_is_derived' });
 });

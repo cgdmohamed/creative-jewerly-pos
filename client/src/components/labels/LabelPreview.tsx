@@ -11,15 +11,15 @@ interface LabelPreviewProps {
 
 export function LabelPreview({ item, options, className }: LabelPreviewProps) {
   const [svg, setSvg] = useState('');
-  const { template, logoUrl, brandName, printerName, offsetX, offsetY } = options;
+  const { template, logoUrl, brandName, printerName, offsetX, offsetY, gapY } = options;
 
   useEffect(() => {
     let active = true;
-    void buildLabelSvg(item, { template, logoUrl, brandName, printerName, offsetX, offsetY }).then((value) => {
+    void buildLabelSvg(item, { template, logoUrl, brandName, printerName, offsetX, offsetY, gapY }).then((value) => {
       if (active) setSvg(value);
     });
     return () => { active = false; };
-  }, [item, template, logoUrl, brandName, printerName, offsetX, offsetY]);
+  }, [item, template, logoUrl, brandName, printerName, offsetX, offsetY, gapY]);
 
   return (
     <div

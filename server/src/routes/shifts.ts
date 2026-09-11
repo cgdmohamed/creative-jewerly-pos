@@ -43,6 +43,10 @@ shiftsRouter.get('/current', async (req, res) => {
         WHERE inv.shift_id=$1 AND p.affects_shift
        UNION ALL
        SELECT r.method,-r.amount FROM refunds r WHERE r.shift_id=$1
+       UNION ALL
+       SELECT COALESCE(w.payment_method,'cash'),-w.cash_delta
+         FROM wholesale_ledger_entries w
+        WHERE w.shift_id=$1 AND w.entry_type IN ('deposit','payment') AND w.cash_delta<0
      ) movements GROUP BY method`,
     [row.id],
   );
@@ -61,14 +65,24 @@ shiftsRouter.get('/current', async (req, res) => {
 
 shiftsRouter.post('/open', async (req, res) => {
   const { locationId } = req.body ?? {};
-  const open = await queryOne<any>(
-    `SELECT id FROM shifts WHERE employee_id=$1 AND status='open'`, [req.employee!.id]);
-  if (open) return res.json(camelize(open));
-
-  const row = await queryOne<any>(
-    `INSERT INTO shifts (employee_id, location_id) VALUES ($1,$2) RETURNING *`,
-    [req.employee!.id, locationId || req.employee!.locationId || 1]);
-  res.status(201).json(camelize(row));
+  try {
+    const row = await tx(async (q) => {
+      await q.query(`SELECT pg_advisory_xact_lock($1)`, [req.employee!.id]);
+      const open = await q.queryOne<any>(
+        `SELECT * FROM shifts WHERE employee_id=$1 AND status='open' FOR UPDATE`, [req.employee!.id]);
+      if (open) return open;
+      return q.queryOne<any>(
+        `INSERT INTO shifts (employee_id, location_id) VALUES ($1,$2) RETURNING *`,
+        [req.employee!.id, locationId || req.employee!.locationId || 1]);
+    });
+    res.status(201).json(camelize(row));
+  } catch (e: any) {
+    if (String(e.code) === '23505') {
+      const open = await queryOne<any>(`SELECT * FROM shifts WHERE employee_id=$1 AND status='open'`, [req.employee!.id]);
+      return res.json(camelize(open));
+    }
+    throw e;
+  }
 });
 
 // Mandatory shift closing with per-method reconciliation (cash + all payment methods)
@@ -88,6 +102,10 @@ shiftsRouter.post('/:id/close', requirePermission('shift.close'), async (req, re
           WHERE inv.shift_id=$1 AND p.affects_shift
          UNION ALL
          SELECT r.method,-r.amount FROM refunds r WHERE r.shift_id=$1
+         UNION ALL
+         SELECT COALESCE(w.payment_method,'cash'),-w.cash_delta
+           FROM wholesale_ledger_entries w
+          WHERE w.shift_id=$1 AND w.entry_type IN ('deposit','payment') AND w.cash_delta<0
        ) movements GROUP BY method`, [id]);
     const expectedByMethod: Record<string, number> = {};
     for (const t of totals) expectedByMethod[t.method] = Number(t.expected);

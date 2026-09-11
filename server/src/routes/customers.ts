@@ -91,6 +91,16 @@ customersRouter.put('/:id', requirePermission('customers.manage'), async (req, r
   const old = await queryOne<any>(`SELECT * FROM customers WHERE id = $1`, [id]);
   if (!old) return res.status(404).json({ error: 'notfound' });
   const b = req.body ?? {};
+  if (b.isActive === false && old.is_active) {
+    const open = await queryOne<any>(
+      `SELECT
+        (SELECT count(*)::int FROM reservations WHERE customer_id=$1 AND status='active') AS reservations,
+        (SELECT count(*)::int FROM wholesale_weight_orders o JOIN wholesale_traders t ON t.id=o.trader_id
+          WHERE t.customer_id=$1 AND o.status IN ('draft','preparing','ready','partial')) AS wholesale_orders`, [id]);
+    if (Number(open?.reservations) > 0 || Number(open?.wholesale_orders) > 0) {
+      return res.status(409).json({ error: 'customers.has_open_transactions', open: camelize(open) });
+    }
+  }
   const updated = await tx(async (q) => {
     const r = await q.queryOne<any>(
       `UPDATE customers SET

@@ -178,7 +178,7 @@ export function PrinterSettingsSection({ settings }: PrinterSettingsSectionProps
               <Label>معايرة موضع الطباعة (مم)</Label>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <span className="mb-1 block text-xs text-slate-500">أفقي</span>
+                  <span className="mb-1 block text-xs text-slate-500">أفقي: موجب لليمين، سالب لليسار</span>
                   <Input
                     type="number"
                     min={-5}
@@ -189,7 +189,7 @@ export function PrinterSettingsSection({ settings }: PrinterSettingsSectionProps
                   />
                 </div>
                 <div>
-                  <span className="mb-1 block text-xs text-slate-500">رأسي</span>
+                  <span className="mb-1 block text-xs text-slate-500">رأسي: موجب لأسفل، سالب لأعلى</span>
                   <Input
                     type="number"
                     min={-5}
@@ -200,6 +200,18 @@ export function PrinterSettingsSection({ settings }: PrinterSettingsSectionProps
                   />
                 </div>
               </div>
+            </div>
+
+            <div>
+              <Label>مسافة إضافية بين الملصقات (0 مع Media: Gap)</Label>
+              <Input
+                type="number"
+                min={0}
+                max={5}
+                step={0.1}
+                value={current.label_gap_y_mm ?? '0'}
+                onChange={(event) => update('label_gap_y_mm', event.target.value)}
+              />
             </div>
           </div>
         </div>

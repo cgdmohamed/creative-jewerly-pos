@@ -58,6 +58,11 @@ employeesRouter.put('/:id', requirePermission('employees.manage'), async (req, r
   const old = await queryOne<any>(`SELECT * FROM employees WHERE id = $1`, [id]);
   if (!old) return res.status(404).json({ error: 'notfound' });
   const b = req.body ?? {};
+  const changingLocation = b.locationId != null && Number(b.locationId) !== Number(old.location_id);
+  if (b.status === 'inactive' || changingLocation) {
+    const openShift = await queryOne<any>(`SELECT id FROM shifts WHERE employee_id=$1 AND status='open'`, [id]);
+    if (openShift) return res.status(409).json({ error: 'employees.open_shift', shiftId: openShift.id });
+  }
   const updated = await tx(async (q) => {
     const r = await q.queryOne<any>(
       `UPDATE employees SET

@@ -11,11 +11,10 @@ import { ItemSearchSelect } from '@/components/ItemSearchSelect';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, confirmDialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { useReservations, useItems, useCustomers } from '@/hooks/useData';
+import { useReservations, useItems, useCustomers, useActivePrices, useSettings } from '@/hooks/useData';
 import { usePagination } from '@/hooks/usePagination';
 import { api } from '@/lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useOfflineStore } from '@/stores/offline';
 import { fmtDateTime, fmtMoney, STATUS_BADGE } from '@/lib/utils';
 import { can } from '@/stores/auth';
 
@@ -28,6 +27,8 @@ export default function Reservations() {
   const { data: reservations } = useReservations(statusFilter);
   const { data: availableItems } = useItems({ status: 'available' });
   const { data: customers } = useCustomers();
+  const { data: prices } = useActivePrices();
+  const { data: settings } = useSettings();
 
   const pag = usePagination(reservations, 10, statusFilter);
 
@@ -46,19 +47,7 @@ export default function Reservations() {
     },
     onError: (e: any) => {
       if (!navigator.onLine) {
-        useOfflineStore.getState().pushPending('reservation.create', {
-          itemId: Number(form.itemId),
-          customerId: form.customerId ? Number(form.customerId) : null,
-          customerName: form.customerName,
-          customerPhone: form.customerPhone || null,
-          downPayment: Number(form.downPayment),
-          totalValue: Number(form.totalValue),
-          quantity: Number(form.quantity),
-          notes: null,
-        });
-        toast.info('تم حفظ الحجز محليًا — سيُطبق عند عودة الاتصال');
-        setOpen(false);
-        setForm({ itemId: '', customerId: '', customerName: '', customerPhone: '', downPayment: '', totalValue: '', quantity: '1' });
+        toast.warning('إنشاء الحجز يحتاج اتصالاً بالخادم لتثبيت سعر القطعة في نفس اللحظة');
       } else {
         toast.error('خطأ: ' + e.message);
       }
@@ -76,6 +65,28 @@ export default function Reservations() {
 
   const selectedItem = (availableItems ?? []).find((it) => String(it.id) === form.itemId);
   const selectedAvailable = selectedItem?.availableQty ?? 1;
+  const selectedQuantity = Math.max(1, Number(form.quantity) || 1);
+  const reservationTotal = (() => {
+    if (!selectedItem) return null;
+    let unitSubtotal = 0;
+    if (selectedItem.productKind === 'general') {
+      unitSubtotal = Number(selectedItem.salePrice);
+    } else {
+      const price = (prices ?? []).find((p) =>
+        p.metalType === selectedItem.metalType && (p.carat || '') === (selectedItem.carat || ''));
+      if (!price || !(Number(selectedItem.weightG) > 0)) return null;
+      const metal = Number(selectedItem.weightG) * Number(price.pricePerGram);
+      const craft = selectedItem.craftsmanshipType === 'percent'
+        ? metal * Number(selectedItem.craftsmanshipValue) / 100
+        : selectedItem.craftsmanshipType === 'per_gram'
+          ? Number(selectedItem.weightG) * Number(selectedItem.craftsmanshipValue)
+          : Number(selectedItem.craftsmanshipValue);
+      unitSubtotal = metal + craft;
+    }
+    if (!(unitSubtotal > 0)) return null;
+    const vat = Number(settings?.vat_percent ?? 0);
+    return Math.round(unitSubtotal * selectedQuantity * (1 + vat / 100) * 100) / 100;
+  })();
 
   return (
     <div className="p-4 sm:p-6">
@@ -237,8 +248,8 @@ export default function Reservations() {
               <Input type="number" value={form.downPayment} onChange={(e) => setForm({ ...form, downPayment: e.target.value })} />
             </div>
             <div>
-              <Label>القيمة الكاملة *</Label>
-              <Input type="number" value={form.totalValue} onChange={(e) => setForm({ ...form, totalValue: e.target.value })} />
+              <Label>القيمة الكاملة وقت الحجز</Label>
+              <Input type="number" value={reservationTotal ?? ''} readOnly className="bg-slate-50 font-bold" />
             </div>
           </div>
         </div>
@@ -246,7 +257,9 @@ export default function Reservations() {
           <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
           <Button
             variant="brand"
-            disabled={!form.itemId || !form.customerName || !form.downPayment || !form.totalValue}
+            disabled={!form.itemId || !form.customerName || reservationTotal == null
+              || !Number.isFinite(Number(form.downPayment)) || Number(form.downPayment) < 0
+              || Number(form.downPayment) > reservationTotal}
             onClick={() =>
               createRes.mutate({
                 itemId: Number(form.itemId),
@@ -255,7 +268,7 @@ export default function Reservations() {
                 customerName: form.customerName,
                 customerPhone: form.customerPhone || null,
                 downPayment: Number(form.downPayment),
-                totalValue: Number(form.totalValue),
+                totalValue: reservationTotal,
               })
             }
           >

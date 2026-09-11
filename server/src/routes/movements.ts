@@ -37,17 +37,13 @@ movementsRouter.post('/', requirePermission('movement.create'), async (req, res)
   if (!itemId || !toLocationId) return res.status(400).json({ error: 'missing' });
   const qty = Number(quantity ?? 1);
   if (!Number.isInteger(qty) || qty < 1) return res.status(400).json({ error: 'bad.quantity' });
-  const item = await queryOne<any>(`SELECT * FROM items WHERE id = $1 AND is_active`, [itemId]);
-  if (!item) return res.status(404).json({ error: 'notfound' });
-  const available = Number(item.quantity) - Number(item.reserved_qty ?? 0) - Number(item.in_transit_qty ?? 0);
-  if (item.status !== 'available' || available < qty) {
-    return res.status(409).json({ error: 'items.not_available' });
-  }
-  if (item.current_location_id === Number(toLocationId)) {
-    return res.status(400).json({ error: 'movements.same_location' });
-  }
-
-  const row = await tx(async (q) => {
+  try {
+   const row = await tx(async (q) => {
+    const item = await q.queryOne<any>(`SELECT * FROM items WHERE id = $1 AND is_active FOR UPDATE`, [itemId]);
+    if (!item) throw Object.assign(new Error('notfound'), { status: 404 });
+    const available = Number(item.quantity) - Number(item.reserved_qty ?? 0) - Number(item.in_transit_qty ?? 0);
+    if (item.status !== 'available' || available < qty) throw Object.assign(new Error('items.not_available'), { status: 409 });
+    if (item.current_location_id === Number(toLocationId)) throw Object.assign(new Error('movements.same_location'), { status: 400 });
     const m = await q.queryOne<any>(
       `INSERT INTO item_movements (item_id, quantity, from_location_id, to_location_id, moved_by, reason)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
@@ -64,23 +60,24 @@ movementsRouter.post('/', requirePermission('movement.create'), async (req, res)
       [itemId, item.status, status, reason || 'Transfer', req.employee!.id]);
     await audit(q, 'item_movements', m.id, 'create', req.employee!.id, item, m);
     return m;
-  });
-  res.status(201).json(camelize(row));
+   });
+   res.status(201).json(camelize(row));
+  } catch (e: any) { res.status(e.status || 500).json({ error: e.message || 'error' }); }
 });
 
 // Mandatory receive confirmation to complete a transfer
 movementsRouter.post('/:id/receive', requirePermission('movement.receive'), async (req, res) => {
   const id = Number(req.params.id);
-  const m = await queryOne<any>(`SELECT * FROM item_movements WHERE id = $1`, [id]);
-  if (!m) return res.status(404).json({ error: 'notfound' });
-  if (m.status !== 'in_transit') return res.status(409).json({ error: 'movements.not_in_transit' });
-
-  const row = await tx(async (q) => {
+  try {
+   const row = await tx(async (q) => {
+    const m = await q.queryOne<any>(`SELECT * FROM item_movements WHERE id = $1 FOR UPDATE`, [id]);
+    if (!m) throw Object.assign(new Error('notfound'), { status: 404 });
+    if (m.status !== 'in_transit') throw Object.assign(new Error('movements.not_in_transit'), { status: 409 });
     const r = await q.queryOne<any>(
       `UPDATE item_movements SET status = 'received', received_by = $1, received_at = now()
-        WHERE id = $2 RETURNING *`,
+        WHERE id = $2 AND status='in_transit' RETURNING *`,
       [req.employee!.id, id]);
-    const item = await q.queryOne<any>(`SELECT * FROM items WHERE id=$1`, [m.item_id]);
+    const item = await q.queryOne<any>(`SELECT * FROM items WHERE id=$1 FOR UPDATE`, [m.item_id]);
     if (item) {
       const inTransit = Math.max(0, Number(item.in_transit_qty ?? 0) - Number(m.quantity));
       const status = deriveStatus(Number(item.quantity), Number(item.reserved_qty ?? 0), inTransit);
@@ -94,6 +91,34 @@ movementsRouter.post('/:id/receive', requirePermission('movement.receive'), asyn
     }
     await audit(q, 'item_movements', id, 'receive', req.employee!.id, m, r);
     return r;
-  });
-  res.json(camelize(row));
+   });
+   res.json(camelize(row));
+  } catch (e: any) { res.status(e.status || 500).json({ error: e.message || 'error' }); }
+});
+
+movementsRouter.post('/:id/cancel', requirePermission('movement.create'), async (req, res) => {
+  const id = Number(req.params.id);
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'movements.cancel_reason_required' });
+  try {
+    const row = await tx(async (q) => {
+      const m = await q.queryOne<any>(`SELECT * FROM item_movements WHERE id=$1 FOR UPDATE`, [id]);
+      if (!m) throw Object.assign(new Error('notfound'), { status: 404 });
+      if (m.status !== 'in_transit') throw Object.assign(new Error('movements.not_in_transit'), { status: 409 });
+      const item = await q.queryOne<any>(`SELECT * FROM items WHERE id=$1 FOR UPDATE`, [m.item_id]);
+      if (!item || Number(item.in_transit_qty) < Number(m.quantity)) {
+        throw Object.assign(new Error('movements.inventory_mismatch'), { status: 409 });
+      }
+      const inTransit = Number(item.in_transit_qty) - Number(m.quantity);
+      const status = deriveStatus(Number(item.quantity), Number(item.reserved_qty), inTransit);
+      await q.query(`UPDATE items SET in_transit_qty=$1,status=$2,updated_at=now() WHERE id=$3`, [inTransit, status, item.id]);
+      const updated = await q.queryOne<any>(
+        `UPDATE item_movements SET status='cancelled',reason=CONCAT_WS(' | ',reason,$2) WHERE id=$1 RETURNING *`, [id, reason]);
+      await q.query(`INSERT INTO item_status_history (item_id,from_status,to_status,reason,changed_by)
+        VALUES ($1,$2,$3,$4,$5)`, [item.id, item.status, status, `Transfer cancelled: ${reason}`, req.employee!.id]);
+      await audit(q, 'item_movements', id, 'cancel', req.employee!.id, m, updated);
+      return updated;
+    });
+    res.json(camelize(row));
+  } catch (e: any) { res.status(e.status || 500).json({ error: e.message || 'error' }); }
 });

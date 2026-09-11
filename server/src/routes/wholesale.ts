@@ -12,6 +12,14 @@ function httpError(status: number, message: string): never {
   throw error;
 }
 
+async function requireOpenShift(q: any, employeeId: number, locationId: number) {
+  const shift = await q.queryOne(
+    `SELECT * FROM shifts WHERE employee_id=$1 AND location_id=$2 AND status='open'
+      ORDER BY opened_at DESC LIMIT 1 FOR UPDATE`, [employeeId, locationId]);
+  if (!shift) httpError(409, 'shifts.open_required');
+  return shift;
+}
+
 const ORDER_SELECT = `
   SELECT o.*, t.customer_id, t.business_name, t.default_discount_pct,
          c.name AS trader_name, c.phone AS trader_phone, cat.name_ar AS category_name,
@@ -155,10 +163,11 @@ wholesaleRouter.post('/orders', async (req, res) => {
          Number(b.makingPerG || 0), Number(b.discountPercent ?? trader.default_discount_pct ?? 0),
          b.dueDate || null, b.notes || null, req.employee!.id]);
       if (Number(b.deposit || 0) > 0) {
+        const shift = await requireOpenShift(q, req.employee!.id, row.location_id);
         await q.query(`INSERT INTO wholesale_ledger_entries
-          (trader_id,order_id,entry_type,cash_delta,payment_method,reference,created_by)
-          VALUES ($1,$2,'deposit',$3,$4,$5,$6)`,
-          [trader.id,row.id,-Math.abs(Number(b.deposit)),b.paymentMethod || 'cash',row.order_no,req.employee!.id]);
+          (trader_id,order_id,entry_type,cash_delta,payment_method,reference,created_by,shift_id)
+          VALUES ($1,$2,'deposit',$3,$4,$5,$6,$7)`,
+          [trader.id,row.id,-Math.abs(Number(b.deposit)),b.paymentMethod || 'cash',row.order_no,req.employee!.id,shift.id]);
       }
       await audit(q, 'wholesale_weight_orders', row.id, 'create', req.employee!.id, null, row);
       return row;
@@ -264,10 +273,13 @@ wholesaleRouter.post('/orders/:id/deliver', async (req, res) => {
         VALUES ($1,$2,'making_charge',$3,$4,$5,$6)`,
         [order.trader_id,id,making,order.order_no,`مصنعية صافية ${netMakingPerG.toFixed(2)} لكل جرام`,req.employee!.id]);
       const paid = Number(req.body?.paidAmount || 0);
-      if (paid > 0) await q.query(`INSERT INTO wholesale_ledger_entries
-        (trader_id,order_id,entry_type,cash_delta,payment_method,reference,created_by)
-        VALUES ($1,$2,'payment',$3,$4,$5,$6)`,
-        [order.trader_id,id,-paid,req.body?.paymentMethod || 'cash',order.order_no,req.employee!.id]);
+      if (paid > 0) {
+        const shift = await requireOpenShift(q, req.employee!.id, order.location_id);
+        await q.query(`INSERT INTO wholesale_ledger_entries
+          (trader_id,order_id,entry_type,cash_delta,payment_method,reference,created_by,shift_id)
+          VALUES ($1,$2,'payment',$3,$4,$5,$6,$7)`,
+          [order.trader_id,id,-paid,req.body?.paymentMethod || 'cash',order.order_no,req.employee!.id,shift.id]);
+      }
       const total = await q.queryOne<any>('SELECT COALESCE(SUM(delivered_qty*weight_g_snapshot),0) AS w FROM wholesale_order_items WHERE order_id=$1',[id]);
       const returned = await q.queryOne<any>('SELECT COALESCE(SUM(returned_qty*weight_g_snapshot),0) AS w FROM wholesale_order_items WHERE order_id=$1',[id]);
       const status = Number(total.w)-Number(returned?.w || 0) >= Number(order.target_weight_g)-Number(order.tolerance_g) ? 'completed' : 'partial';
@@ -308,7 +320,12 @@ wholesaleRouter.post('/orders/:id/return', async (req, res) => {
         (trader_id,order_id,entry_type,cash_delta,reference,notes,created_by)
         VALUES ($1,$2,'making_refund',$3,$4,$5,$6)`,
         [order.trader_id,id,-refund,order.order_no,`رد ${refundPct}% من المصنعية`,req.employee!.id]);
-      await q.query(`UPDATE wholesale_weight_orders SET status='partial',updated_at=now() WHERE id=$1`,[id]);
+      const delivered = await q.queryOne<any>(
+        `SELECT COALESCE(SUM(delivered_qty),0) AS delivered,COALESCE(SUM(returned_qty),0) AS returned
+           FROM wholesale_order_items WHERE order_id=$1`, [id]);
+      const status = Number(delivered?.delivered) > 0 && Number(delivered.delivered) === Number(delivered.returned)
+        ? 'returned' : 'partial';
+      await q.query(`UPDATE wholesale_weight_orders SET status=$2,updated_at=now() WHERE id=$1`,[id,status]);
       await audit(q,'wholesale_weight_orders',id,'return',req.employee!.id,null,{weight,refundPct,refund});
     });
     res.json(await orderDetails(id));
@@ -320,11 +337,17 @@ wholesaleRouter.post('/traders/:id/payments', async (req,res) => {
   if (!(amount>0)) return res.status(400).json({error:'bad.amount'});
   const trader=await queryOne<any>('SELECT * FROM wholesale_traders WHERE id=$1 AND is_active',[id]);
   if (!trader) return res.status(404).json({error:'notfound'});
-  const row=await queryOne<any>(`INSERT INTO wholesale_ledger_entries
-    (trader_id,order_id,entry_type,cash_delta,payment_method,reference,notes,created_by)
-    VALUES ($1,$2,'payment',$3,$4,$5,$6,$7) RETURNING *`,
-    [id,req.body?.orderId || null,-amount,req.body?.paymentMethod || 'cash',req.body?.reference || null,req.body?.notes || null,req.employee!.id]);
-  res.status(201).json(camelize(row));
+  try {
+    const row=await tx(async q => {
+      const locationId = Number(req.body?.locationId) || req.employee!.locationId || 1;
+      const shift = await requireOpenShift(q, req.employee!.id, locationId);
+      return q.queryOne<any>(`INSERT INTO wholesale_ledger_entries
+        (trader_id,order_id,entry_type,cash_delta,payment_method,reference,notes,created_by,shift_id)
+        VALUES ($1,$2,'payment',$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [id,req.body?.orderId || null,-amount,req.body?.paymentMethod || 'cash',req.body?.reference || null,req.body?.notes || null,req.employee!.id,shift.id]);
+    });
+    res.status(201).json(camelize(row));
+  } catch(e:any) { res.status(e.status || 500).json({error:e.message || 'error'}); }
 });
 
 wholesaleRouter.post('/orders/:id/cancel', async (req,res) => {
@@ -335,6 +358,9 @@ wholesaleRouter.post('/orders/:id/cancel', async (req,res) => {
       if (!order) httpError(404,'notfound');
       if (['completed','cancelled'].includes(order.status)) httpError(409,'wholesale.order_locked');
       const allocations=await q.query<any>('SELECT * FROM wholesale_order_items WHERE order_id=$1',[id]);
+      if (allocations.some((a:any) => Number(a.delivered_qty) > Number(a.returned_qty))) {
+        httpError(409,'wholesale.delivered_order_cannot_cancel');
+      }
       for (const a of allocations) {
         const pending=Number(a.quantity)-Number(a.delivered_qty);
         if (pending<=0) continue;

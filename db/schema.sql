@@ -234,12 +234,14 @@ CREATE TABLE invoices (
   shift_id              INT,                                     -- set later
   is_offline            BOOLEAN NOT NULL DEFAULT FALSE,
   device_id             TEXT,
+  external_ref          TEXT,
   return_reason         TEXT,
   returned_at           TIMESTAMPTZ,
   returned_by           INT REFERENCES employees(id),
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
   ,CHECK (total = metal_subtotal + craftsmanship_total + vat_amount)
 );
+CREATE UNIQUE INDEX uq_invoices_external_ref ON invoices(external_ref) WHERE external_ref IS NOT NULL;
 
 CREATE TABLE invoice_items (
   id                     SERIAL PRIMARY KEY,
@@ -306,13 +308,21 @@ CREATE TABLE reservations (
   down_payment   NUMERIC(12,2) NOT NULL CHECK (down_payment >= 0),
   total_value    NUMERIC(12,2) NOT NULL CHECK (total_value >= 0),
   remaining_due  NUMERIC(12,2) NOT NULL CHECK (remaining_due >= 0),
+  weight_g_snapshot NUMERIC(10,3),
+  metal_price_snapshot NUMERIC(12,2),
+  metal_subtotal_snapshot NUMERIC(12,2),
+  craftsmanship_total_snapshot NUMERIC(12,2),
+  vat_percent_snapshot NUMERIC(5,2),
+  vat_amount_snapshot NUMERIC(12,2),
   reserved_by    INT REFERENCES employees(id),
   reserved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   status         TEXT NOT NULL DEFAULT 'active'
                  CHECK (status IN ('active','completed','cancelled')),
   invoice_id     INT REFERENCES invoices(id),
   notes          TEXT
+  ,external_ref  TEXT
 );
+CREATE UNIQUE INDEX uq_reservations_external_ref ON reservations(external_ref) WHERE external_ref IS NOT NULL;
 
 -- ------------------------------------------------------------
 -- Stock counts (جرد) + discrepancy report
@@ -335,12 +345,14 @@ CREATE TABLE stock_count_items (
   item_id          INT NOT NULL REFERENCES items(id),
   expected_qty     INT NOT NULL DEFAULT 1,
   counted_qty      INT NOT NULL DEFAULT 0,
-  counted_status   TEXT NOT NULL
-                   CHECK (counted_status IN ('found','missing','unexpected')),
+  counted_status   TEXT NOT NULL DEFAULT 'unscanned'
+                   CHECK (counted_status IN ('unscanned','found','missing','unexpected')),
   counted_by       INT REFERENCES employees(id),
-  counted_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  counted_at       TIMESTAMPTZ
 );
 CREATE UNIQUE INDEX uq_count_item ON stock_count_items (stock_count_id, item_id);
+CREATE UNIQUE INDEX uq_stock_counts_one_open_per_location
+  ON stock_counts(location_id) WHERE status = 'in_progress';
 
 -- ------------------------------------------------------------
 -- Shifts + cash reconciliation (تسوية الكاش)
@@ -355,6 +367,8 @@ CREATE TABLE shifts (
   closed_by     INT REFERENCES employees(id),
   notes         TEXT
 );
+CREATE UNIQUE INDEX uq_shifts_one_open_per_employee
+  ON shifts(employee_id) WHERE status = 'open';
 
 CREATE TABLE shift_reconciliations (
   id              SERIAL PRIMARY KEY,
@@ -497,6 +511,7 @@ INSERT INTO app_settings (key, value) VALUES
   ('label_brand_name','GOLDEN CROWN'),
   ('label_printer_name','LV-1300'),
   ('label_offset_x_mm','0'),
-  ('label_offset_y_mm','0');
+  ('label_offset_y_mm','0'),
+  ('label_gap_y_mm','0');
 
 COMMIT;

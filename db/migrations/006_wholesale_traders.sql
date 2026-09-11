@@ -38,9 +38,10 @@ CREATE TABLE IF NOT EXISTS wholesale_weight_orders (
   discount_percent      NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 100),
   due_date              DATE,
   status                TEXT NOT NULL DEFAULT 'draft'
-                        CHECK (status IN ('draft','preparing','ready','partial','completed','cancelled')),
+                        CHECK (status IN ('draft','preparing','ready','partial','completed','returned','cancelled')),
   notes                 TEXT,
   created_by            INT REFERENCES employees(id),
+  shift_id              INT REFERENCES shifts(id),
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );

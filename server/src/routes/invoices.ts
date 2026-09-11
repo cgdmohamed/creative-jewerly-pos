@@ -64,6 +64,12 @@ function validateManagerPin(db: Queryable, pin: string): Promise<boolean> {
 }
 
 export async function buildInvoice(db: Queryable, b: any, employeeId: number, cashier: any, hasDiscountOverride = false) {
+  const externalRef = String(b.externalRef || '').trim() || null;
+  if (externalRef) {
+    if (cashier.employee_no !== 'B2B') throw httpError(403, 'invoices.external_ref_forbidden');
+    const existing = await db.queryOne<any>(`SELECT * FROM invoices WHERE external_ref=$1`, [externalRef]);
+    if (existing) return existing;
+  }
   const items: any[] = b.items;
   if (!Array.isArray(items) || items.length === 0) throw httpError(400, 'missing:items');
   if (!b.customerId) throw httpError(400, 'customers.required');
@@ -73,6 +79,14 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
   const customerPhone = String(customer.phone || b.customerPhone || '').trim();
   if (customerPhone.replace(/\D/g, '').length < 8) throw httpError(400, 'customers.phone_required');
   const customerId = customer.id;
+  const locationId = Number(b.locationId) || cashier.location_id || 1;
+  const shift = cashier.employee_no === 'B2B'
+    ? await db.queryOne<any>(
+      `SELECT * FROM shifts WHERE location_id=$1 AND status='open' ORDER BY opened_at DESC LIMIT 1 FOR UPDATE`, [locationId])
+    : await db.queryOne<any>(
+      `SELECT * FROM shifts WHERE employee_id=$1 AND location_id=$2 AND status='open' ORDER BY opened_at DESC LIMIT 1 FOR UPDATE`,
+      [employeeId, locationId]);
+  if (!shift) throw httpError(409, 'shifts.open_required');
 
   const combinedItems = new Map<number, number>();
   for (const line of items) {
@@ -103,9 +117,11 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
     }
   }
   const reservedForSale = new Map<number, number>();
+  const reservationsByItem = new Map<number, any[]>();
   for (const reservation of reservations) {
     const itemId = Number(reservation.item_id);
     reservedForSale.set(itemId, (reservedForSale.get(itemId) ?? 0) + Number(reservation.quantity));
+    reservationsByItem.set(itemId, [...(reservationsByItem.get(itemId) ?? []), reservation]);
   }
   for (const itemId of reservedForSale.keys()) {
     if (!combinedItems.has(itemId)) throw httpError(409, 'reservations.item_mismatch');
@@ -133,6 +149,25 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
       throw httpError(409, `items.not_available:${item.code}`);
     }
 
+    const lockedReservations = reservationsByItem.get(itemId) ?? [];
+    const hasLockedPrice = lockedReservations.length > 0 && lockedReservations.every((reservation) =>
+      reservation.metal_subtotal_snapshot != null
+      && reservation.craftsmanship_total_snapshot != null
+      && reservation.vat_amount_snapshot != null);
+    if (hasLockedPrice) {
+      lines.push({
+        item,
+        quantity,
+        metalTotal: lockedReservations.reduce(
+          (sum, reservation) => sum + Number(reservation.metal_subtotal_snapshot), 0),
+        craft: lockedReservations.reduce(
+          (sum, reservation) => sum + Number(reservation.craftsmanship_total_snapshot), 0),
+        unitMetalPrice: Number(lockedReservations[0].metal_price_snapshot ?? 0),
+        weightSnapshot: Number(lockedReservations[0].weight_g_snapshot ?? 0),
+      });
+      continue;
+    }
+
     // General products (watches, gifts…) have a fixed sale price — no metal
     // pricing. Their price lands in the craftsmanship bucket so discounts
     // and VAT keep working for mixed carts.
@@ -141,7 +176,7 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
       if (!(salePrice > 0)) throw httpError(409, `items.no_sale_price:${item.code}`);
       lines.push({
         item, quantity,
-        metalTotal: 0, craft: salePrice * quantity, unitMetalPrice: 0,
+        metalTotal: 0, craft: salePrice * quantity, unitMetalPrice: 0, weightSnapshot: 0,
       });
       continue;
     }
@@ -166,6 +201,7 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
       metalTotal: unitMetalTotal * quantity,
       craft: craft * quantity,
       unitMetalPrice: Number(price.price_per_gram),
+      weightSnapshot: Number(item.weight_g),
     });
   }
 
@@ -219,7 +255,31 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
     `SELECT value FROM app_settings WHERE key = 'vat_percent'`))?.value ?? 0);
   let totals;
   try {
-    if (reservations.length) {
+    const allReservationsHaveSnapshots = reservations.length > 0 && reservations.every((reservation) =>
+      reservation.metal_subtotal_snapshot != null
+      && reservation.craftsmanship_total_snapshot != null
+      && reservation.vat_amount_snapshot != null);
+    if (allReservationsHaveSnapshots) {
+      const metalSubtotal = roundMoney(reservations.reduce(
+        (sum, reservation) => sum + Number(reservation.metal_subtotal_snapshot), 0));
+      const craftsmanshipTotal = roundMoney(reservations.reduce(
+        (sum, reservation) => sum + Number(reservation.craftsmanship_total_snapshot), 0));
+      const vatAmount = roundMoney(reservations.reduce(
+        (sum, reservation) => sum + Number(reservation.vat_amount_snapshot), 0));
+      const total = roundMoney(reservations.reduce(
+        (sum, reservation) => sum + Number(reservation.total_value), 0));
+      const preTax = metalSubtotal + craftsmanshipTotal;
+      totals = {
+        metalSubtotal,
+        rawCraftsmanship: craftsmanshipTotal,
+        craftsmanshipTotal,
+        discountAmount: 0,
+        vatPercent: preTax > 0 ? roundMoney(vatAmount * 100 / preTax) : 0,
+        vatAmount,
+        total,
+      };
+      craftsmanshipSubtotalRaw = craftsmanshipTotal;
+    } else if (reservations.length) {
       const agreedTotal = roundMoney(reservations.reduce(
         (sum, reservation) => sum + Number(reservation.total_value || 0), 0));
       totals = calculateLockedInvoiceTotals(metalSubtotalRaw, agreedTotal, vatPercent);
@@ -268,16 +328,14 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
     `INSERT INTO invoices
        (invoice_no, employee_id, location_id, customer_id, customer_name, customer_phone, metal_subtotal,
         craftsmanship_total, discount_amount, discount_reason, discount_approved_by,
-        vat_percent, vat_amount, total, payment_method, shift_id, is_offline, device_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-             (SELECT id FROM shifts WHERE employee_id=$2 AND status='open' ORDER BY opened_at DESC LIMIT 1),
-             $16,$17)
+        vat_percent, vat_amount, total, payment_method, shift_id, is_offline, device_id, external_ref)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING *`,
     [
-      invoiceNo, employeeId, Number(b.locationId) || cashier.location_id || 1,
+      invoiceNo, employeeId, locationId,
       customerId, customer.name, customerPhone, totals.metalSubtotal, totals.craftsmanshipTotal,
       totals.discountAmount, discountReason, approvedBy, totals.vatPercent, totals.vatAmount, totals.total,
-      b.paymentMethod || 'cash', !!b.isOffline, b.deviceId || null,
+      b.paymentMethod || 'cash', shift.id, !!b.isOffline, b.deviceId || null, externalRef,
     ],
   );
 
@@ -300,7 +358,7 @@ export async function buildInvoice(db: Queryable, b: any, employeeId: number, ca
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         inv.id, l.item.id, l.quantity, l.item.code, l.item.name, l.item.metal_type, l.item.carat,
-        l.item.weight_g ?? 0, l.unitMetalPrice, l.item.metal_price_at_add,
+        l.weightSnapshot, l.unitMetalPrice, l.item.metal_price_at_add,
         roundMoney(l.craft / l.quantity), lineDiscount, l.item.cost, lineTotals[index],
       ],
     );

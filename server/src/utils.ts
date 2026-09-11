@@ -63,9 +63,8 @@ export function deriveStatus(
   inTransitQty: number,
 ): 'available' | 'reserved' | 'sold' | 'in_transit' {
   if (quantity <= 0) return 'sold';
-  if (quantity - reservedQty - inTransitQty <= 0) {
-    if (inTransitQty > 0) return 'in_transit';
-    if (reservedQty > 0) return 'reserved';
-  }
-  return 'available';
+  if (quantity - reservedQty - inTransitQty > 0) return 'available';
+  if (inTransitQty > 0) return 'in_transit';
+  if (reservedQty > 0) return 'reserved';
+  return 'sold';
 }

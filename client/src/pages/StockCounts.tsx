@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, ClipboardList, CheckCircle2 } from 'lucide-react';
+import { Plus, ClipboardList, CheckCircle2, XCircle, ShieldCheck } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select, Textarea } from '@/components/ui/input';
@@ -51,6 +51,20 @@ export default function StockCounts() {
     onError: (e: any) => toast.error('خطأ: ' + e.message),
   });
 
+  const cancelMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason: string }) =>
+      api(`/api/stock-counts/${id}/cancel`, { method: 'POST', body: { reason } }),
+    onSuccess: () => { toast.success('تم إلغاء الجرد'); setActiveCount(null); invalidate(); },
+    onError: (e: any) => toast.error('خطأ: ' + e.message),
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason: string }) =>
+      api(`/api/stock-counts/${id}/apply`, { method: 'POST', body: { reason } }),
+    onSuccess: () => { toast.success('تم اعتماد الفروقات وتحديث المخزون'); invalidate(); qc.invalidateQueries({ queryKey: ['items'] }); },
+    onError: (e: any) => toast.error('خطأ: ' + e.message),
+  });
+
   return (
     <div className="p-4 sm:p-6">
       <PageHeader
@@ -86,11 +100,11 @@ export default function StockCounts() {
                   <TableCell className="text-xs">{fmtDateTime(c.startedAt)}</TableCell>
                   <TableCell className="text-xs">{c.startedByName}</TableCell>
                   <TableCell>
-                    <Badge tone={STATUS_BADGE[c.status]}>{c.status === 'in_progress' ? 'جاري' : 'مكتمل'}</Badge>
+                    <Badge tone={STATUS_BADGE[c.status]}>{c.status === 'in_progress' ? 'جاري' : c.status === 'completed' ? 'بانتظار الاعتماد' : c.status === 'applied' ? 'معتمد' : 'ملغي'}</Badge>
                   </TableCell>
                   <TableCell className="text-end">
                     <Button variant="outline" size="sm" onClick={() => setActiveCount(c.id)}>
-                      <ClipboardList className="h-3.5 w-3.5" /> {c.status === 'completed' ? 'التقرير' : 'استكمال'}
+                      <ClipboardList className="h-3.5 w-3.5" /> {c.status === 'in_progress' ? 'استكمال' : 'التقرير'}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -126,14 +140,27 @@ export default function StockCounts() {
         </div>
       </Dialog>
 
-      {activeCount != null && <CountWorkbench id={activeCount} onClose={() => setActiveCount(null)} onComplete={() => completeMutation.mutate()} completing={completeMutation.isPending} />}
+      {activeCount != null && <CountWorkbench
+        id={activeCount}
+        onClose={() => setActiveCount(null)}
+        onComplete={() => completeMutation.mutate()}
+        onCancel={async () => {
+          const reason = window.prompt('سبب إلغاء الجرد:')?.trim();
+          if (reason) cancelMutation.mutate({ id: activeCount, reason });
+        }}
+        onApply={async () => {
+          const reason = window.prompt('سبب اعتماد فروقات الجرد:')?.trim();
+          if (reason && await confirmDialog('سيتم تعديل كميات المخزون لتطابق الجرد. هل تريد المتابعة؟')) applyMutation.mutate({ id: activeCount, reason });
+        }}
+        completing={completeMutation.isPending || cancelMutation.isPending || applyMutation.isPending}
+      />}
     </div>
   );
 }
 
 function CountWorkbench({
-  id, onClose, onComplete, completing,
-}: { id: number; onClose: () => void; onComplete: () => void; completing: boolean }) {
+  id, onClose, onComplete, onCancel, onApply, completing,
+}: { id: number; onClose: () => void; onComplete: () => void; onCancel: () => void; onApply: () => void; completing: boolean }) {
   const { data: count, isLoading } = useStockCount(id);
   const { data: report } = useStockCountReport(id);
   const qc = useQueryClient();
@@ -150,7 +177,8 @@ function CountWorkbench({
 
   const mark = (itemId: number, countedQty: number) => markMutation.mutate({ itemId, countedQty });
 
-  const done = count?.status === 'completed';
+  const done = count?.status !== 'in_progress';
+  const unscanned = (count?.expected ?? []).filter((it: any) => it.countedStatus === 'unscanned').length;
 
   const pagExpected = usePagination(count?.expected, 10, count?.id);
 
@@ -163,15 +191,22 @@ function CountWorkbench({
       className="max-w-4xl"
       footer={
         !done ? (
-          <Button
+          <div className="flex gap-2"><Button variant="outline" className="text-rose-600" onClick={onCancel}>
+            <XCircle className="h-4 w-4" /> إلغاء الجرد
+          </Button><Button
             variant="brand"
             loading={completing}
+            disabled={unscanned > 0}
             onClick={async () => {
               if (await confirmDialog('إنهاء الجرد وإصدار تقرير الفروقات؟')) onComplete();
             }}
           >
             <CheckCircle2 className="h-4 w-4" /> إنهاء وإصدار التقرير
-          </Button>
+          </Button></div>
+        ) : count?.status === 'completed' ? (
+          <div className="flex gap-2"><Button variant="outline" onClick={onClose}>إغلاق</Button><Button variant="brand" loading={completing} onClick={onApply}>
+            <ShieldCheck className="h-4 w-4" /> اعتماد الفروقات
+          </Button></div>
         ) : (
           <Button variant="brand" onClick={onClose}>إغلاق</Button>
         )
@@ -181,6 +216,9 @@ function CountWorkbench({
 
       {!done && count && (
         <div className="space-y-4">
+          {unscanned > 0 && <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            متبقي {unscanned} قطعة لم يتم عدها. يجب تأكيد كل قطعة حتى لو كانت الكمية صفر.
+          </div>}
           <div>
             <h4 className="mb-2 text-sm font-bold text-slate-700">القائمة المتوقعة ({count.expected?.length ?? 0})</h4>
             <Table>
@@ -196,7 +234,7 @@ function CountWorkbench({
               </TableHeader>
               <TableBody>
                 {pagExpected.slice.map((it) => {
-                  const val = countedMap[it.id] ?? it.countedQty ?? it.expectedQty ?? 0;
+                  const val = countedMap[it.id] ?? (it.countedStatus === 'unscanned' ? it.expectedQty : it.countedQty) ?? 0;
                   const derived = val < (it.expectedQty ?? 0) ? 'missing' : val > (it.expectedQty ?? 0) ? 'unexpected' : 'found';
                   return (
                     <TableRow key={it.id}>
@@ -222,7 +260,7 @@ function CountWorkbench({
                       </TableCell>
                       <TableCell>
                         <Button size="sm" variant="brand" onClick={() => mark(it.id, val)}>
-                          {it.countedQty == null && val === (it.expectedQty ?? 0) ? 'تأكيد' : 'حفظ'}
+                          {it.countedStatus === 'unscanned' ? 'تأكيد' : 'حفظ'}
                         </Button>
                       </TableCell>
                     </TableRow>

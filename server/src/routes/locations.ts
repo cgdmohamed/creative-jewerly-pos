@@ -75,44 +75,18 @@ locationsRouter.delete('/:id', requirePermission('locations.manage'), async (req
   if (refs.stock_counts > 0) {
     return res.status(409).json({ error: 'locations.in_use', message: `لا يمكن الحذف — للفرع جرد سابق (${refs.stock_counts})` });
   }
-
-  // Movements reference this branch via FKs (to_location_id NOT NULL), so they
-  // are redirected to the target branch like the items — they track physical
-  // goods, not history. A target branch is therefore required whenever the
-  // location has items OR movements.
-  const moveTo = Number(req.body?.moveToLocationId) || null;
   if (refs.items > 0 || refs.movements > 0) {
-    if (!moveTo) return res.status(400).json({ error: 'moveTo.required', message: 'اختر الفرع الذي تنتقل إليه المنتجات قبل الحذف' });
-    if (moveTo === id) return res.status(400).json({ error: 'moveTo.same' });
-    const target = await queryOne<any>(`SELECT id FROM locations WHERE id = $1 AND is_active`, [moveTo]);
-    if (!target) return res.status(400).json({ error: 'moveTo.notfound', message: 'الفرع المستهدف غير موجود أو غير نشط' });
+    return res.status(409).json({
+      error: 'locations.in_use',
+      message: 'لا يمكن حذف الفرع قبل نقل القطع، ولا يمكن حذف فرع موجود في سجل حركة تاريخي. عطّل الفرع للحفاظ على السجل.',
+    });
   }
 
   await tx(async (q) => {
-    if (refs.items > 0) {
-      const moved = await q.query<any>(
-        `UPDATE items SET current_location_id = $1, updated_at = now()
-          WHERE current_location_id = $2 RETURNING id`, [moveTo, id]);
-      for (const r of moved) {
-        await audit(q, 'items', r.id, 'update', req.employee!.id,
-          { current_location_id: id }, { current_location_id: moveTo, reason: 'location_deleted' });
-      }
-    }
-    let movedMovements = 0;
-    if (refs.movements > 0) {
-      const res2 = await q.query<any>(
-        `UPDATE item_movements SET to_location_id = $1 WHERE to_location_id = $2 RETURNING id`, [moveTo, id]);
-      movedMovements += res2.length;
-      const res3 = await q.query<any>(
-        `UPDATE item_movements SET from_location_id = $1 WHERE from_location_id = $2 RETURNING id`, [moveTo, id]);
-      movedMovements += res3.length;
-      await audit(q, 'item_movements', `${id}`, 'update', req.employee!.id,
-        { from_location_id: id, to_location_id: id }, { from_location_id: moveTo, to_location_id: moveTo, reason: 'location_deleted' });
-    }
     await q.query(`DELETE FROM locations WHERE id = $1`, [id]);
-    await audit(q, 'locations', id, 'delete', req.employee!.id, loc, { ...req.body, movedItems: refs.items, movedMovements });
+    await audit(q, 'locations', id, 'delete', req.employee!.id, loc, req.body ?? {});
   });
-  res.json({ ok: true, movedItems: refs.items, movedMovements: refs.movements });
+  res.json({ ok: true });
 });
 
 export const categoriesRouter = Router();

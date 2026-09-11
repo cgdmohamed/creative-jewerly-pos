@@ -41,6 +41,7 @@ const SETTINGS: Record<string, SettingRule> = {
   label_printer_name: { type: 'text', maxLength: 120 },
   label_offset_x_mm: { type: 'number', min: -5, max: 5 },
   label_offset_y_mm: { type: 'number', min: -5, max: 5 },
+  label_gap_y_mm: { type: 'number', min: 0, max: 5 },
 };
 
 settingsRouter.get('/', async (_req, res) => {
